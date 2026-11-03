@@ -1906,16 +1906,25 @@ struct LeadFormSheet: View {
     let existing: Lead?
     @EnvironmentObject private var store: LeadsStore
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var activityStore = LeadActivityStore()
     @State private var draft: Lead
     @State private var hasFollowUp: Bool
     @State private var followUp: Date
     @State private var saving = false
     @State private var error: String?
+    @State private var activityToDelete: ActivityRecord?
+    @State private var deletingActivityID: String?
     init(userID: String, existing: Lead? = nil) {
         self.userID = userID; self.existing = existing
         _draft = State(initialValue: existing ?? Lead())
         _hasFollowUp = State(initialValue: existing?.followUpDate != nil)
         _followUp = State(initialValue: existing?.followUpDate ?? Date())
+    }
+    private var sortedActivities: [ActivityRecord] {
+        activityStore.activities.sorted {
+            if $0.timestamp == $1.timestamp { return $0.id < $1.id }
+            return $0.timestamp > $1.timestamp
+        }
     }
     var body: some View { NavigationStack {
         Form {
@@ -1943,6 +1952,34 @@ struct LeadFormSheet: View {
                 Toggle("Married", isOn: $draft.tmMarried); Toggle("Age 25–55", isOn: $draft.tmAge); Toggle("Children", isOn: $draft.tmChildren); Toggle("Homeowner", isOn: $draft.tmHomeowner); Toggle("Occupation", isOn: $draft.tmOccupation)
             }.listRowBackground(Color.glassPanel)
             Section("Follow-up") { Toggle("Set follow-up", isOn: $hasFollowUp); if hasFollowUp { DatePicker("Date and time", selection: $followUp) }; Text("Changing or clearing this date updates the earliest open reminder. Other reminders remain open.").font(.caption).foregroundStyle(Color.textSecondary) }.listRowBackground(Color.glassPanel)
+            if existing != nil {
+                Section {
+                    if activityStore.activitiesLoading {
+                        ProgressView("Loading activity…")
+                    } else if let loadError = activityStore.activitiesError {
+                        Text(loadError).foregroundStyle(Color.neonPink)
+                    } else if sortedActivities.isEmpty {
+                        Text("No logged activity yet.").foregroundStyle(Color.textSecondary)
+                    } else {
+                        ForEach(sortedActivities) { record in
+                            activityEditRow(record)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        activityToDelete = record
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    .disabled(deletingActivityID != nil || saving)
+                                }
+                        }
+                    }
+                    Text("Deleting a log removes that activity entry and its linked note. Reminders, stages, and appointments are not undone.")
+                        .font(.caption)
+                        .foregroundStyle(Color.textSecondary)
+                } header: {
+                    Text("Activity")
+                }.listRowBackground(Color.glassPanel)
+            }
             Section("Notes") { TextEditor(text: $draft.notes).frame(minHeight: 100).scrollContentBackground(.hidden) }.listRowBackground(Color.glassPanel)
             if let error { Section { Text(error).foregroundStyle(Color.neonPink) }.listRowBackground(Color.glassPanel) }
         }.scrollContentBackground(.hidden).background { SpaceBackgroundView() }
@@ -1951,7 +1988,77 @@ struct LeadFormSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
                 ToolbarItem(placement: .confirmationAction) { Button("Save") { save() }.disabled(saving || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.category.isEmpty) }
             }
+            .onAppear {
+                guard let leadID = existing?.id else { return }
+                activityStore.start(leadID: leadID, userID: userID)
+            }
+            .onDisappear { activityStore.stop() }
+            .confirmationDialog(
+                "Delete this activity?",
+                isPresented: Binding(get: { activityToDelete != nil }, set: { if !$0 { activityToDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Delete Activity", role: .destructive) {
+                    if let record = activityToDelete { deleteActivity(record) }
+                    activityToDelete = nil
+                }
+                Button("Cancel", role: .cancel) { activityToDelete = nil }
+            } message: {
+                Text("This cannot be undone. Open reminders and pipeline changes from this log stay as they are.")
+            }
     } }
+    @ViewBuilder
+    private func activityEditRow(_ record: ActivityRecord) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(record.outcome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Activity" : record.outcome)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.textPrimary)
+                Spacer()
+                if deletingActivityID == record.id {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text(record.type.title)
+                        .font(.caption)
+                        .foregroundStyle(Color.textSecondary)
+                }
+            }
+            if !record.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(record.note)
+                    .font(.caption)
+                    .foregroundStyle(Color.textSecondary)
+                    .lineLimit(3)
+            }
+            Text(activityDateDisplay(record.timestamp))
+                .font(.caption2)
+                .foregroundStyle(Color.textSecondary)
+        }
+        .padding(.vertical, 4)
+    }
+    private func activityDateDisplay(_ millis: Int64) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM dd, yyyy, h:mm a"
+        return formatter.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
+    }
+    private func deleteActivity(_ record: ActivityRecord) {
+        guard let leadID = existing?.id else { return }
+        deletingActivityID = record.id
+        error = nil
+        Task {
+            defer { deletingActivityID = nil }
+            do {
+                try await store.deleteActivityRecord(leadID: leadID, userID: userID, activityID: record.id)
+                draft.notes = NoteUtils.removeNote(withEventId: record.id, from: draft.notes)
+                if let synced = store.leads.first(where: { $0.id == leadID }) {
+                    draft.lastAttemptedContact = synced.lastAttemptedContact
+                    draft.lastConnectedContact = synced.lastConnectedContact
+                }
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
     private func save() {
         saving = true; error = nil
         var lead = draft

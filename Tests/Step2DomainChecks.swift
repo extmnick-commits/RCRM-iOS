@@ -81,6 +81,15 @@ let untagged = NoteUtils.prependNote("", content: record.note, date: Date(timeIn
 check(ContactActivityTimeline.mergeActivityAndNotes([record], rawNotes: untagged).count == 1, "Legacy text/time deduplication")
 let distinct = tagged.replacingOccurrences(of: "act_test", with: "act_other")
 check(ContactActivityTimeline.mergeActivityAndNotes([record], rawNotes: distinct).count == 2, "Different eid survives same text/time")
+let removed = NoteUtils.removeNote(withEventId: "act_test", from: tagged)
+check(removed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "removeNote drops tagged block")
+check(OutcomeSavePlanner.contactTimestamps(from: [
+    ActivityRecord(id: "a1", outcome: "No answer", timestamp: now - 1000),
+    ActivityRecord(id: "a2", outcome: "Connected", timestamp: now)
+]).connected == now, "contactTimestamps picks latest connected")
+check(OutcomeSavePlanner.contactTimestamps(from: [
+    ActivityRecord(id: "a1", outcome: "No answer", timestamp: now)
+]).attempted == now && OutcomeSavePlanner.contactTimestamps(from: []).attempted == nil, "contactTimestamps recomputes attempted")
 let old = "Undated\n" + NoteUtils.prependNote("", content: "Old", date: Date(timeIntervalSince1970: Double(now - 300_000) / 1000))
 let merged = ContactActivityTimeline.mergeActivityAndNotes([record], rawNotes: old)
 check(merged.first?.id == record.id && merged.last?.timestampMillis == nil, "Newest first, undated last")

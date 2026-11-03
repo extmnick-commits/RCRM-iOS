@@ -1625,6 +1625,24 @@ enum OutcomeSavePlanner {
         guard !paused, !closed else { return nil }
         return actions.filter { $0.status == .pending && $0.dueTime > 0 }.map(\.dueTime).min()
     }
+    static func contactTimestamps(from activities: [ActivityRecord]) -> (attempted: Int64?, connected: Int64?) {
+        var attempted: Int64?
+        var connected: Int64?
+        for record in activities {
+            let outcome = record.outcome.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !outcome.isEmpty else { continue }
+            if attempted == nil || record.timestamp > attempted! {
+                attempted = record.timestamp
+            }
+            if outcome.localizedCaseInsensitiveContains("Connected")
+                || outcome.localizedCaseInsensitiveContains("Meeting completed") {
+                if connected == nil || record.timestamp > connected! {
+                    connected = record.timestamp
+                }
+            }
+        }
+        return (attempted, connected)
+    }
     static func sanitizeOperationId(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed.isEmpty ? "outcome" : trimmed).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "\\", with: "_")
@@ -1769,6 +1787,25 @@ enum NoteUtils {
     }
     static func canApplyEditedNotes(remoteNotes: String, expectedOriginalNotes: String) -> Bool {
         remoteNotes == expectedOriginalNotes
+    }
+    static func removeNote(withEventId eventId: String, from existing: String) -> String {
+        let id = eventId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return existing }
+        let parsed = ContactActivityTimeline.parseNotes(existing)
+        let filtered = parsed.filter { $0.eventId != id }
+        guard filtered.count != parsed.count else { return existing }
+        return serializedNotes(filtered)
+    }
+    private static func serializedNotes(_ notes: [ParsedNote]) -> String {
+        notes.compactMap { note in
+            let content = note.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            if note.date == "Unknown date", note.eventId == nil {
+                return content
+            }
+            let eventPart = note.eventId.map { " | eid:\($0)" } ?? ""
+            return "[\(note.date)\(eventPart)]: \(content)"
+        }.joined(separator: "\n\n")
     }
     static func getDisplayNote(_ fullNotes: String) -> String {
         let parsed = ContactActivityTimeline.parseNotes(fullNotes)
@@ -2624,6 +2661,46 @@ final class LeadsStore: ObservableObject {
         deleted.isClosed = true
         ReminderNotificationService.shared.syncLeadActions(lead: deleted, actions: [])
     }
+    func deleteActivityRecord(leadID: String, userID: String, activityID: String) async throws {
+        try validate(userID)
+        guard !leadID.isEmpty, !leadID.contains("/"), !activityID.isEmpty else { throw StoreError.invalidLead }
+        let db = Firestore.firestore()
+        let leadRef = db.collection("leads").document(leadID)
+        let activityRef = leadRef.collection("activity_records").document(activityID)
+        let listed = try await leadRef.collection("activity_records").getDocuments(source: .server)
+        let remaining = listed.documents
+            .filter { $0.documentID != activityID }
+            .map { ActivityRecord(document: $0, leadID: leadID) }
+        let timestamps = OutcomeSavePlanner.contactTimestamps(from: remaining)
+        _ = try await db.runTransaction { transaction, pointer -> Any? in
+            do {
+                let leadSnap = try transaction.getDocument(leadRef)
+                guard let data = leadSnap.data(), data["ownerId"] as? String == userID else { throw StoreError.invalidLead }
+                let activitySnap = try transaction.getDocument(activityRef)
+                guard activitySnap.exists else { throw StoreError.activityNotFound }
+                transaction.deleteDocument(activityRef)
+                let existingNotes = data["notes"] as? String ?? ""
+                let updatedNotes = NoteUtils.removeNote(withEventId: activityID, from: existingNotes)
+                var updates: [String: Any] = ["ownerId": userID]
+                if updatedNotes != existingNotes { updates["notes"] = updatedNotes }
+                if let attempted = timestamps.attempted {
+                    updates["lastAttemptedContact"] = attempted
+                } else {
+                    updates["lastAttemptedContact"] = FieldValue.delete()
+                }
+                if let connected = timestamps.connected {
+                    updates["lastConnectedContact"] = connected
+                } else {
+                    updates["lastConnectedContact"] = FieldValue.delete()
+                }
+                transaction.updateData(updates, forDocument: leadRef)
+                return nil
+            } catch {
+                pointer?.pointee = error as NSError
+                return nil
+            }
+        }
+    }
     private func validate(_ userID: String) throws {
         guard currentUserID == userID, Auth.auth().currentUser?.uid == userID else { throw StoreError.invalidSession }
     }
@@ -2631,9 +2708,10 @@ final class LeadsStore: ObservableObject {
     deinit { listener?.remove() }
     enum StoreError: LocalizedError {
         case invalidSession, invalidLead, changedFollowUp, linkedAppointment, invalidReminder, reminderNotOpen, reminderTitle, reminderDate
-        case invalidAppointment, newerAppointment, staleNotes
+        case invalidAppointment, newerAppointment, staleNotes, activityNotFound
         var errorDescription: String? {
             switch self {
+            case .activityNotFound: return "That activity entry was already removed."
             case .invalidReminder: return "That reminder is no longer available."
             case .reminderNotOpen: return "That reminder is no longer open."
             case .reminderTitle: return "Please enter a title."
