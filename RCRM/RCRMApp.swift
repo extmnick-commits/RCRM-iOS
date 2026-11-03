@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 import FirebaseCore
 import FirebaseAuth
 import FirebaseFirestore
@@ -6,16 +7,30 @@ import FirebaseFirestore
 @main
 struct RCRMApp: App {
     @StateObject private var session = SessionStore()
+    @StateObject private var notifications = ReminderNotificationService.shared
 
     init() {
         if let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
            let options = FirebaseOptions(contentsOfFile: path) {
             FirebaseApp.configure(options: options)
         }
+        ReminderNotificationService.shared.installDelegate()
     }
 
     var body: some Scene {
-        WindowGroup { RootView().environmentObject(session) }
+        WindowGroup {
+            RootView()
+                .environmentObject(session)
+                .environmentObject(notifications)
+                .onAppear {
+                    notifications.onOpenLead = { [weak session] leadID in
+                        session?.pendingLeadID = leadID
+                    }
+                    if let queued = notifications.consumePendingLeadID() {
+                        session.pendingLeadID = queued
+                    }
+                }
+        }
     }
 }
 
@@ -24,6 +39,7 @@ final class SessionStore: ObservableObject {
     @Published var user: User?
     @Published var error: String?
     @Published var isLoading = false
+    @Published var pendingLeadID: String?
     private var authListener: AuthStateDidChangeListenerHandle?
     var isConfigured: Bool { FirebaseApp.app() != nil }
 
@@ -206,6 +222,13 @@ enum AppointmentAgenda {
         var label: String { self == .upcoming ? "Upcoming" : "All Month" }
     }
 
+    enum EventSource: String, CaseIterable, Identifiable {
+        case all = "ALL"
+        case crmOnly = "CRM_ONLY"
+        var id: String { rawValue }
+        var label: String { self == .all ? "All Events" : "RCRM" }
+    }
+
     struct DayCellModel: Identifiable, Equatable {
         let dayStartMillis: Int64
         let dayOfMonth: Int
@@ -246,6 +269,16 @@ enum AppointmentAgenda {
         var status: AppointmentStatus
         var originalInstanceTime: Int64?
         var updatedAtMillis: Int64
+        var calendarEventKey: String?
+        var calendarDisplayName: String
+        var accountName: String
+        var explicitCrm: Bool
+        var suggestedLeadId: String?
+        var canWriteCalendar: Bool
+        var recurring: Bool
+        var timeDrifted: Bool
+        var eventDescription: String?
+        var calendarColor: Int
 
         init(
             id: String? = nil,
@@ -264,7 +297,17 @@ enum AppointmentAgenda {
             eventId: Int64? = nil,
             status: AppointmentStatus = .scheduled,
             originalInstanceTime: Int64? = nil,
-            updatedAtMillis: Int64 = 0
+            updatedAtMillis: Int64 = 0,
+            calendarEventKey: String? = nil,
+            calendarDisplayName: String = "",
+            accountName: String = "",
+            explicitCrm: Bool = true,
+            suggestedLeadId: String? = nil,
+            canWriteCalendar: Bool = true,
+            recurring: Bool = false,
+            timeDrifted: Bool = false,
+            eventDescription: String? = nil,
+            calendarColor: Int = 0x4C8DFF
         ) {
             let resolvedApptId = appointmentId.isEmpty ? (id ?? UUID().uuidString) : appointmentId
             self.id = id ?? (leadId.isEmpty ? resolvedApptId : "\(leadId)|\(resolvedApptId)")
@@ -284,6 +327,16 @@ enum AppointmentAgenda {
             self.status = status
             self.originalInstanceTime = originalInstanceTime
             self.updatedAtMillis = updatedAtMillis
+            self.calendarEventKey = calendarEventKey
+            self.calendarDisplayName = calendarDisplayName
+            self.accountName = accountName
+            self.explicitCrm = explicitCrm
+            self.suggestedLeadId = suggestedLeadId
+            self.canWriteCalendar = canWriteCalendar
+            self.recurring = recurring
+            self.timeDrifted = timeDrifted
+            self.eventDescription = eventDescription
+            self.calendarColor = calendarColor
         }
 
         var startDate: Date { Date(timeIntervalSince1970: Double(startMillis) / 1000) }
@@ -661,6 +714,17 @@ enum AppointmentAgenda {
         return startDiffers || locationDiffers || clearDiffers
     }
 
+    static func digestAppointmentStarts(
+        _ records: [AppointmentRecord],
+        dayStart: Int64,
+        dayEnd: Int64
+    ) -> [Int64] {
+        records
+            .filter { $0.status == .scheduled && $0.startMillis >= dayStart && $0.startMillis < dayEnd }
+            .map(\.startMillis)
+            .sorted()
+    }
+
     static func startOfDay(_ millis: Int64, calendar: Calendar = .current) -> Int64 {
         let date = Date(timeIntervalSince1970: Double(millis) / 1000)
         return Int64(calendar.startOfDay(for: date).timeIntervalSince1970 * 1000)
@@ -726,14 +790,19 @@ enum AppointmentAgenda {
         monthWindow: MonthWindow,
         selectedDayMillis: Int64?,
         todayStartMillis: Int64,
+        source: EventSource = .all,
         calendar: Calendar = .current
     ) -> [AgendaItem] {
         let rangeStart = startOfMonthContaining(monthStartMillis, calendar: calendar)
         let rangeEnd = shiftMonth(rangeStart, delta: 1, calendar: calendar)
         return items
-            .filter { $0.startMillis >= rangeStart && $0.startMillis < rangeEnd }
             .filter { item in
-                let day = startOfDay(item.startMillis, calendar: calendar)
+                if source == .crmOnly && !item.explicitCrm { return false }
+                let anchor = item.allDay ? eventDayStart(item.startMillis, allDay: true, calendar: calendar) : item.startMillis
+                return anchor >= rangeStart && anchor < rangeEnd
+            }
+            .filter { item in
+                let day = eventDayStart(item.startMillis, allDay: item.allDay, calendar: calendar)
                 if let selectedDayMillis { return day == selectedDayMillis }
                 if monthWindow == .upcoming && day < todayStartMillis { return false }
                 return true
@@ -868,6 +937,481 @@ enum AppointmentAgenda {
         let cleanUrl = meetingUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !cleanLoc.isEmpty || !cleanUrl.isEmpty else { return nil }
         return "📍 Location / Join"
+    }
+
+    struct UserCalendar: Equatable, Identifiable {
+        var id: String
+        var displayName: String
+        var accountName: String
+        var canWrite: Bool
+        var isPrimary: Bool
+        var colorHex: Int
+    }
+
+    struct CalendarEventRef: Equatable {
+        var eventKey: String
+        var title: String
+        var startMillis: Int64
+        var endMillis: Int64
+        var allDay: Bool
+        var calendarId: String
+        var calendarDisplayName: String
+        var accountName: String
+        var canWrite: Bool
+        var recurring: Bool
+        var originalInstanceTime: Int64?
+        var explicitLeadId: String?
+        var explicitAppointmentId: String?
+        var canceled: Bool
+        var location: String?
+        var notes: String
+        var colorHex: Int
+    }
+
+    private static let leadLinkPattern = try! NSRegularExpression(pattern: #"rcrm://lead/(\S+)"#, options: [.caseInsensitive])
+    private static let appointmentLinkPattern = try! NSRegularExpression(pattern: #"rcrm://appointment/(\S+)"#, options: [.caseInsensitive])
+
+    static func leadId(from url: URL) -> String? {
+        guard url.scheme?.caseInsensitiveCompare("rcrm") == .orderedSame else { return nil }
+        let host = url.host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let segment: String
+        if host.caseInsensitiveCompare("lead") == .orderedSame {
+            segment = path
+        } else if host.isEmpty {
+            let parts = path.split(separator: "/").map(String.init)
+            guard parts.count >= 2, parts[0].caseInsensitiveCompare("lead") == .orderedSame else { return nil }
+            segment = parts.dropFirst().joined(separator: "/")
+        } else {
+            return nil
+        }
+        guard !segment.isEmpty, segment.caseInsensitiveCompare("lead") != .orderedSame else { return nil }
+        return cleanLinkToken(segment)
+    }
+
+    static func extractLeadId(_ description: String?) -> String? {
+        firstLinkToken(in: description, pattern: leadLinkPattern)
+    }
+
+    static func extractAppointmentId(_ description: String?) -> String? {
+        firstLinkToken(in: description, pattern: appointmentLinkPattern)
+    }
+
+    static func crmDescription(
+        leadName: String,
+        phone: String?,
+        location: String?,
+        leadId: String,
+        appointmentId: String?,
+        notes: String? = nil
+    ) -> String {
+        var lines = ["Appointment with \(leadName)"]
+        if let phone = phone?.trimmingCharacters(in: .whitespacesAndNewlines), !phone.isEmpty {
+            lines.append("Phone: \(phone)")
+        }
+        if let location = location?.trimmingCharacters(in: .whitespacesAndNewlines), !location.isEmpty {
+            lines.append("Location: \(location)")
+        }
+        if let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+            lines.append("")
+            lines.append("Notes:")
+            lines.append(notes)
+        }
+        lines.append("")
+        lines.append("---")
+        lines.append("Open Lead in RCRM: rcrm://lead/\(leadId)")
+        if let appointmentId = appointmentId?.trimmingCharacters(in: .whitespacesAndNewlines), !appointmentId.isEmpty {
+            lines.append("rcrm://appointment/\(appointmentId)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func mergeDescription(
+        existing: String?,
+        leadName: String,
+        phone: String?,
+        location: String?,
+        leadId: String,
+        appointmentId: String?,
+        notes: String? = nil
+    ) -> String {
+        guard let existing, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return crmDescription(leadName: leadName, phone: phone, location: location, leadId: leadId, appointmentId: appointmentId, notes: notes)
+        }
+        var text = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty, !text.contains(notes) {
+            text += "\n\nNotes:\n\(notes)"
+        }
+        if !text.contains("rcrm://lead/\(leadId)") {
+            text += "\n\nOpen Lead in RCRM: rcrm://lead/\(leadId)"
+        }
+        if let appointmentId = appointmentId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !appointmentId.isEmpty,
+           !text.contains("rcrm://appointment/\(appointmentId)") {
+            text += "\nrcrm://appointment/\(appointmentId)"
+        }
+        return text
+    }
+
+    static func stripRcrmFooter(_ text: String?) -> String {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty || trimmed == "---" { return false }
+                if trimmed.lowercased().hasPrefix("rcrm://") { return false }
+                if trimmed.lowercased().contains("rcrm://lead/") || trimmed.lowercased().contains("rcrm://appointment/") { return false }
+                if trimmed.lowercased().hasPrefix("open lead in rcrm:") { return false }
+                return true
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func eventSubtitle(calendarDisplayName: String, linkedLeadName: String?) -> String {
+        let calendar = calendarDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Calendar"
+            : calendarDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let link = linkedLeadName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let linkText = link.isEmpty ? "Unlinked Event" : "Linked: \(link)"
+        return "● \(calendar) • \(linkText)"
+    }
+
+    static func emptyMessage(monthWindow: MonthWindow, source: EventSource, daySelected: Bool) -> String {
+        if daySelected && source == .crmOnly { return "No RCRM appointments on this day" }
+        if daySelected { return "No events on this day" }
+        if source == .crmOnly && monthWindow == .upcoming { return "No upcoming RCRM appointments this month." }
+        if source == .crmOnly { return "No RCRM appointments this month." }
+        if monthWindow == .upcoming { return "Nothing upcoming this month. Switch to All Month to see earlier days." }
+        return "No appointments or calendar events this month"
+    }
+
+    static func matchEventToLeadName(_ eventTitle: String, names: [String]) -> String? {
+        let title = eventTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
+        let lowerTitle = title.lowercased()
+        let ranked = Array(Set(names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.count >= 2 }))
+            .sorted { $0.count > $1.count }
+        return ranked.first { containsName(lowerTitle, $0.lowercased()) }
+    }
+
+    static func eventIdentityAllows(
+        eventLeadId: String?,
+        eventAppointmentId: String?,
+        expectedLeadId: String,
+        expectedAppointmentId: String?,
+        soleAppointmentForLead: Bool,
+        recurringMaster: Bool = false
+    ) -> Bool {
+        if recurringMaster || expectedLeadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+        let eventAppointment = nonEmpty(eventAppointmentId)
+        let eventLead = nonEmpty(eventLeadId)
+        if let eventAppointment {
+            if eventAppointment != expectedAppointmentId { return false }
+            if let eventLead, eventLead != expectedLeadId { return false }
+            return !(expectedAppointmentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
+        if let eventLead {
+            if eventLead != expectedLeadId { return false }
+            if expectedAppointmentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false { return true }
+            if expectedAppointmentId == legacyAppointmentId(expectedLeadId) { return true }
+            return soleAppointmentForLead
+        }
+        return false
+    }
+
+    static func selectRetryTarget(
+        candidates: [CalendarEventRef],
+        appointmentId: String?,
+        leadId: String,
+        preferredEventKey: String?,
+        soleAppointmentForLead: Bool = false
+    ) -> String? {
+        if let preferredEventKey, !preferredEventKey.isEmpty,
+           let preferred = candidates.first(where: { $0.eventKey == preferredEventKey }),
+           eventIdentityAllows(
+            eventLeadId: preferred.explicitLeadId,
+            eventAppointmentId: preferred.explicitAppointmentId,
+            expectedLeadId: leadId,
+            expectedAppointmentId: appointmentId,
+            soleAppointmentForLead: soleAppointmentForLead
+           ) {
+            return preferred.eventKey
+        }
+        if let appointmentId = appointmentId?.trimmingCharacters(in: .whitespacesAndNewlines), !appointmentId.isEmpty {
+            let matches = candidates.filter { event in
+                event.explicitAppointmentId == appointmentId &&
+                    (event.explicitLeadId?.isEmpty != false || event.explicitLeadId == leadId)
+            }.map(\.eventKey)
+            if let first = Array(Set(matches)).sorted().first { return first }
+        }
+        if !leadId.isEmpty {
+            let leadMatches = Array(Set(candidates.filter { event in
+                event.explicitLeadId == leadId && event.explicitAppointmentId == nil
+            }.map(\.eventKey))).sorted()
+            let appointmentBlank = appointmentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+            if leadMatches.count == 1 && (appointmentBlank || appointmentId == legacyAppointmentId(leadId) || soleAppointmentForLead) {
+                return leadMatches[0]
+            }
+        }
+        return nil
+    }
+
+    static func suggestedLeadIds(events: [CalendarEventRef], leads: [(id: String, name: String)]) -> [String: String] {
+        var nameToId: [String: String] = [:]
+        var names: [String] = []
+        for lead in leads {
+            let name = lead.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = name.lowercased()
+            guard name.count >= 2, nameToId[key] == nil else { continue }
+            nameToId[key] = lead.id
+            names.append(name)
+        }
+        var suggestions: [String: String] = [:]
+        for event in events {
+            if event.explicitLeadId?.isEmpty == false || event.explicitAppointmentId?.isEmpty == false { continue }
+            guard let matched = matchEventToLeadName(event.title, names: names) else { continue }
+            if let leadId = nameToId[matched.lowercased()] {
+                suggestions[event.eventKey] = leadId
+            }
+        }
+        return suggestions
+    }
+
+    static func redundantReadOnlyCalendarIds(_ calendars: [UserCalendar]) -> Set<String> {
+        var hide = Set<String>()
+        let groups = Dictionary(grouping: calendars) { $0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        for group in groups.values where group.count >= 2 {
+            guard let keeper = group.min(by: { lhs, rhs in
+                let leftRank = calendarPreferenceRank(lhs)
+                let rightRank = calendarPreferenceRank(rhs)
+                if leftRank != rightRank { return leftRank < rightRank }
+                let leftAccount = lhs.accountName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let rightAccount = rhs.accountName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if leftAccount != rightAccount { return leftAccount < rightAccount }
+                return lhs.id < rhs.id
+            }) else { continue }
+            let holidayGroup = keeper.displayName.localizedCaseInsensitiveContains("holiday")
+            for calendar in group where calendar.id != keeper.id {
+                if !calendar.canWrite || holidayGroup { hide.insert(calendar.id) }
+            }
+        }
+        return hide
+    }
+
+    static func dedupeEvents(_ events: [CalendarEventRef], calendars: [UserCalendar]) -> [CalendarEventRef] {
+        let byId = Dictionary(uniqueKeysWithValues: calendars.map { ($0.id, $0) })
+        let ranked = events.sorted { lhs, rhs in
+            let left = calendarPreferenceRank(byId[lhs.calendarId])
+            let right = calendarPreferenceRank(byId[rhs.calendarId])
+            if left != right { return left < right }
+            let leftAccount = (byId[lhs.calendarId]?.accountName ?? lhs.accountName).lowercased()
+            let rightAccount = (byId[rhs.calendarId]?.accountName ?? rhs.accountName).lowercased()
+            if leftAccount != rightAccount { return leftAccount < rightAccount }
+            if lhs.calendarId != rhs.calendarId { return lhs.calendarId < rhs.calendarId }
+            return lhs.eventKey < rhs.eventKey
+        }
+        var seen = Set<String>()
+        var kept: [CalendarEventRef] = []
+        for event in ranked {
+            let key = "\(event.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(event.startMillis)|\(event.endMillis)"
+            if seen.insert(key).inserted { kept.append(event) }
+        }
+        return kept.sorted {
+            if $0.startMillis != $1.startMillis { return $0.startMillis < $1.startMillis }
+            return $0.title.lowercased() < $1.title.lowercased()
+        }
+    }
+
+    static func matchAgenda(
+        appointments: [AgendaItem],
+        events: [CalendarEventRef],
+        suggestedLeadIdsByEventKey: [String: String],
+        localEventKeysByAppointmentId: [String: String]
+    ) -> [AgendaItem] {
+        var used = Set<Int>()
+        var rows: [AgendaItem] = []
+        for appointment in appointments {
+            if let match = matchEventIndex(appointment, events: events, used: used, appointments: appointments, localEventKeysByAppointmentId: localEventKeysByAppointmentId) {
+                used.insert(match)
+                rows.append(mergedEntry(appointment, event: events[match]))
+            } else {
+                var crmOnly = appointment
+                if crmOnly.calendarDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    crmOnly.calendarDisplayName = "RCRM"
+                }
+                crmOnly.explicitCrm = true
+                rows.append(crmOnly)
+            }
+        }
+        for (index, event) in events.enumerated() {
+            if used.contains(index) || event.canceled { continue }
+            let explicit = event.explicitLeadId?.isEmpty == false || event.explicitAppointmentId?.isEmpty == false
+            let suggestion = explicit ? nil : suggestedLeadIdsByEventKey[event.eventKey]
+            rows.append(eventEntry(event, suggestedLeadId: suggestion))
+        }
+        return rows.sorted {
+            if $0.startMillis != $1.startMillis { return $0.startMillis < $1.startMillis }
+            return $0.title.lowercased() < $1.title.lowercased()
+        }
+    }
+
+    static func eventDayStart(_ millis: Int64, allDay: Bool, calendar: Calendar = .current) -> Int64 {
+        if !allDay { return startOfDay(millis, calendar: calendar) }
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+        let parts = utc.dateComponents([.year, .month, .day], from: date)
+        guard let local = calendar.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day, hour: 0, minute: 0, second: 0)) else {
+            return startOfDay(millis, calendar: calendar)
+        }
+        return Int64(local.timeIntervalSince1970 * 1000)
+    }
+
+    static func calendarAppURL(at millis: Int64) -> URL? {
+        let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+        return URL(string: "calshow:\(date.timeIntervalSinceReferenceDate)")
+    }
+
+    private static func calendarPreferenceRank(_ calendar: UserCalendar?) -> Int {
+        guard let calendar else { return 4 }
+        if calendar.isPrimary && calendar.canWrite { return 0 }
+        if calendar.canWrite { return 1 }
+        if calendar.isPrimary { return 2 }
+        return 3
+    }
+
+    private static func matchEventIndex(
+        _ appointment: AgendaItem,
+        events: [CalendarEventRef],
+        used: Set<Int>,
+        appointments: [AgendaItem],
+        localEventKeysByAppointmentId: [String: String]
+    ) -> Int? {
+        let open = events.indices.filter { index in
+            !used.contains(index) && !events[index].canceled
+        }
+        func pick(_ indices: [Int]) -> Int? {
+            if indices.isEmpty { return nil }
+            let exact = indices.filter { sameInstant(events[$0].startMillis, appointment.startMillis) }
+            if exact.count == 1 { return exact[0] }
+            if exact.count > 1 { return exact.min { events[$0].eventKey < events[$1].eventKey } }
+            let storedInstance = appointment.originalInstanceTime
+            let moved = indices.filter { index in
+                let event = events[index]
+                if let original = event.originalInstanceTime, sameInstant(original, appointment.startMillis) { return true }
+                if let storedInstance, sameInstant(event.startMillis, storedInstance) { return true }
+                return false
+            }
+            if moved.count == 1 { return moved[0] }
+            if !moved.isEmpty { return nil }
+            if indices.count == 1 { return indices[0] }
+            return nil
+        }
+        if let hit = pick(open.filter { events[$0].explicitAppointmentId == appointment.appointmentId }) {
+            return hit
+        }
+        if let storedKey = localEventKeysByAppointmentId[appointment.appointmentId], !storedKey.isEmpty {
+            let sole = appointments.filter { $0.leadId == appointment.leadId }.count == 1
+            if let hit = pick(open.filter { index in
+                let event = events[index]
+                guard event.eventKey == storedKey else { return false }
+                return eventIdentityAllows(
+                    eventLeadId: event.explicitLeadId,
+                    eventAppointmentId: event.explicitAppointmentId,
+                    expectedLeadId: appointment.leadId,
+                    expectedAppointmentId: appointment.appointmentId,
+                    soleAppointmentForLead: sole
+                )
+            }) {
+                return hit
+            }
+        }
+        let leadEvents = open.filter { index in
+            let event = events[index]
+            return event.explicitLeadId == appointment.leadId && event.explicitAppointmentId == nil
+        }
+        let leadAppointments = appointments.filter { $0.leadId == appointment.leadId }.count
+        if leadEvents.count == 1 && leadAppointments == 1 { return leadEvents[0] }
+        return nil
+    }
+
+    private static func mergedEntry(_ appointment: AgendaItem, event: CalendarEventRef) -> AgendaItem {
+        var merged = appointment
+        merged.title = event.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? appointment.title : event.title
+        merged.startMillis = event.startMillis
+        merged.endMillis = event.endMillis
+        merged.allDay = event.allDay
+        merged.location = nonEmpty(event.location) ?? appointment.location
+        merged.calendarEventKey = event.eventKey
+        merged.calendarDisplayName = event.calendarDisplayName
+        merged.accountName = event.accountName
+        merged.explicitCrm = true
+        merged.suggestedLeadId = nil
+        merged.canWriteCalendar = event.canWrite
+        merged.recurring = event.recurring
+        merged.timeDrifted = !sameInstant(appointment.startMillis, event.startMillis)
+        merged.eventDescription = event.notes
+        merged.calendarColor = event.colorHex
+        return merged
+    }
+
+    private static func eventEntry(_ event: CalendarEventRef, suggestedLeadId: String?) -> AgendaItem {
+        let explicit = event.explicitLeadId?.isEmpty == false || event.explicitAppointmentId?.isEmpty == false
+        let leadId = event.explicitLeadId ?? ""
+        let appointmentId = event.explicitAppointmentId ?? ""
+        return AgendaItem(
+            id: "cal|\(event.eventKey)|\(event.startMillis)",
+            leadId: leadId,
+            appointmentId: appointmentId,
+            category: "",
+            title: event.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(No title)" : event.title,
+            startMillis: event.startMillis,
+            endMillis: event.endMillis,
+            allDay: event.allDay,
+            location: nonEmpty(event.location),
+            calendarEventKey: event.eventKey,
+            calendarDisplayName: event.calendarDisplayName,
+            accountName: event.accountName,
+            explicitCrm: explicit,
+            suggestedLeadId: explicit ? nil : suggestedLeadId,
+            canWriteCalendar: event.canWrite,
+            recurring: event.recurring,
+            eventDescription: event.notes,
+            calendarColor: event.colorHex
+        )
+    }
+
+    private static func firstLinkToken(in text: String?, pattern: NSRegularExpression) -> String? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let ns = text as NSString
+        guard let match = pattern.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)), match.numberOfRanges > 1 else { return nil }
+        return cleanLinkToken(ns.substring(with: match.range(at: 1)))
+    }
+
+    private static func cleanLinkToken(_ raw: String) -> String? {
+        var token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trim: Set<Character> = [".", ",", ";", ")", "]"]
+        while let last = token.last, trim.contains(last) { token.removeLast() }
+        return token.isEmpty ? nil : token
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func containsName(_ lowerTitle: String, _ lowerName: String) -> Bool {
+        guard !lowerName.isEmpty else { return false }
+        var from = lowerTitle.startIndex
+        while let range = lowerTitle.range(of: lowerName, range: from..<lowerTitle.endIndex) {
+            let beforeOK = range.lowerBound == lowerTitle.startIndex || !lowerTitle[lowerTitle.index(before: range.lowerBound)].isLetter && !lowerTitle[lowerTitle.index(before: range.lowerBound)].isNumber
+            let afterOK = range.upperBound == lowerTitle.endIndex || !lowerTitle[range.upperBound].isLetter && !lowerTitle[range.upperBound].isNumber
+            if beforeOK && afterOK { return true }
+            from = lowerTitle.index(after: range.lowerBound)
+        }
+        return false
     }
 }
 
@@ -1332,6 +1876,387 @@ enum ContactActivityTimeline {
     }
 }
 
+struct ReminderAlarmState: Equatable, Codable, Identifiable {
+    var leadId: String
+    var actionId: String
+    var dueTime: Int64
+    var title: String
+    var contactName: String
+
+    var id: String {
+        ReminderNotificationPlanner.reminderRequestIdentity(leadId: leadId, actionId: actionId)
+    }
+
+    var notificationTitle: String {
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? "Reminder" : clean
+    }
+
+    var notificationBody: String {
+        let clean = contactName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? "Contact" : clean
+    }
+
+    var deepLinkURLString: String {
+        "rcrm://lead/\(leadId)"
+    }
+}
+
+struct ReminderAlarmSync: Equatable {
+    var cancelActionIds: Set<String>
+    var cancelRequestIds: Set<String>
+    var schedule: [ReminderAlarmState]
+}
+
+struct LeadNotificationSummary: Equatable {
+    var id: String
+    var name: String
+    var followUpMillis: Int64?
+    var isPaused: Bool
+    var isClosed: Bool
+    var appointments: [AppointmentRecord]
+
+    init(
+        id: String,
+        name: String,
+        followUpMillis: Int64? = nil,
+        isPaused: Bool = false,
+        isClosed: Bool = false,
+        appointments: [AppointmentRecord] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.followUpMillis = followUpMillis
+        self.isPaused = isPaused
+        self.isClosed = isClosed
+        self.appointments = appointments
+    }
+}
+
+struct DailyDigestPlan: Equatable {
+    var followUps: [String]
+    var appointments: [String]
+    var title: String
+    var summaryText: String
+    var bodyLines: [String]
+    var bodyText: String
+
+    var totalCount: Int { followUps.count + appointments.count }
+}
+
+enum ReminderNotificationPlanner {
+    static let restoreGraceMillis: Int64 = 6 * 60 * 60 * 1000
+    static let dailyDigestIdentifier = "rcrm_daily_digest"
+    static let defaultDigestHour = 8
+    static let defaultDigestMinute = 0
+    static let maxLinesPerSection = 8
+    static let extraLeadIdKey = "targetLeadId"
+    static let extraReminderIdKey = "reminderId"
+    static let extraTitleKey = "REMINDER_TITLE"
+    static let extraContactNameKey = "LEAD_NAME"
+    static let extraUrlKey = "rcrmUrl"
+
+    static func sanitizeId(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? "reminder" : trimmed
+        return base.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "\\", with: "_")
+    }
+
+    static func reminderRequestIdentity(leadId: String, actionId: String) -> String {
+        "reminder:\(sanitizeId(leadId)):\(sanitizeId(actionId))"
+    }
+
+    static func legacyActionId(leadId: String) -> String {
+        "legacy_followup_\(sanitizeId(leadId))"
+    }
+
+    static func appointmentActionId(appointmentId: String) -> String {
+        "appt_\(sanitizeId(appointmentId))"
+    }
+
+    static func isAppointmentAlarmKey(_ key: String) -> Bool {
+        key.hasPrefix("appt:") || key.hasPrefix("appt_")
+    }
+
+    static func shouldRestoreAlarm(dueTime: Int64, nowMillis: Int64) -> Bool {
+        dueTime > 0 && dueTime > nowMillis - restoreGraceMillis
+    }
+
+    static func fireDate(dueTime: Int64, nowMillis: Int64) -> Date {
+        let targetMillis = max(dueTime, nowMillis + 5_000)
+        return Date(timeIntervalSince1970: Double(targetMillis) / 1000)
+    }
+
+    static func syncAlarms(
+        leadId: String,
+        contactName: String,
+        isPaused: Bool = false,
+        isClosed: Bool = false,
+        persisted: [ReminderAlarmState],
+        actions: [NextAction],
+        nowMillis: Int64
+    ) -> ReminderAlarmSync {
+        let cleanName = contactName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Contact"
+            : contactName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let desired: [NextAction]
+        if isPaused || isClosed {
+            desired = []
+        } else {
+            desired = actions.filter { action in
+                action.status == .pending &&
+                    action.dueTime > 0 &&
+                    shouldRestoreAlarm(dueTime: action.dueTime, nowMillis: nowMillis)
+            }
+        }
+        let leadPersisted = persisted.filter { $0.leadId == leadId }
+        var cancelActionIds = Set<String>()
+        for stored in leadPersisted {
+            let match = desired.first(where: { $0.id == stored.actionId })
+            let desiredTitle = match.map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Reminder" : $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if match == nil || match?.dueTime != stored.dueTime || desiredTitle != stored.title || cleanName != stored.contactName {
+                cancelActionIds.insert(stored.actionId)
+            }
+        }
+        let legacyId = legacyActionId(leadId: leadId)
+        if !desired.contains(where: { $0.id == legacyId }) {
+            cancelActionIds.insert(legacyId)
+        }
+        let cancelRequestIds = Set(cancelActionIds.map { reminderRequestIdentity(leadId: leadId, actionId: $0) })
+        let schedule = desired.compactMap { action -> ReminderAlarmState? in
+            let cleanTitle = action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Reminder"
+                : action.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let stored = leadPersisted.first(where: { $0.actionId == action.id })
+            if let stored,
+               stored.dueTime == action.dueTime,
+               stored.title == cleanTitle,
+               stored.contactName == cleanName {
+                return nil
+            }
+            return ReminderAlarmState(
+                leadId: leadId,
+                actionId: action.id,
+                dueTime: action.dueTime,
+                title: cleanTitle,
+                contactName: cleanName
+            )
+        }
+        return ReminderAlarmSync(
+            cancelActionIds: cancelActionIds,
+            cancelRequestIds: cancelRequestIds,
+            schedule: schedule
+        )
+    }
+
+    static func reconcileLeadSummaries(
+        leads: [LeadNotificationSummary],
+        persisted: [ReminderAlarmState],
+        syncedLeadIds: Set<String>,
+        nowMillis: Int64
+    ) -> (kept: [ReminderAlarmState], cancelRequestIds: Set<String>, schedule: [ReminderAlarmState]) {
+        let leadsById = Dictionary(uniqueKeysWithValues: leads.map { ($0.id, $0) })
+        var kept: [ReminderAlarmState] = []
+        var cancelRequestIds = Set<String>()
+        var schedule: [ReminderAlarmState] = []
+
+        for alarm in persisted {
+            guard let lead = leadsById[alarm.leadId],
+                  !lead.isPaused,
+                  !lead.isClosed,
+                  shouldRestoreAlarm(dueTime: alarm.dueTime, nowMillis: nowMillis) else {
+                cancelRequestIds.insert(alarm.id)
+                continue
+            }
+            if alarm.actionId == legacyActionId(leadId: lead.id), lead.followUpMillis == nil {
+                cancelRequestIds.insert(alarm.id)
+                continue
+            }
+            let cleanName = lead.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Contact" : lead.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if alarm.contactName != cleanName {
+                cancelRequestIds.insert(alarm.id)
+                let updated = ReminderAlarmState(
+                    leadId: alarm.leadId,
+                    actionId: alarm.actionId,
+                    dueTime: alarm.dueTime,
+                    title: alarm.title,
+                    contactName: cleanName
+                )
+                kept.append(updated)
+                schedule.append(updated)
+            } else {
+                kept.append(alarm)
+            }
+        }
+
+        for lead in leads where !lead.isPaused && !lead.isClosed {
+            let cleanName = lead.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Contact" : lead.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let existingForLead = kept.filter { $0.leadId == lead.id }
+
+            for appt in lead.appointments where appt.status == .scheduled && shouldRestoreAlarm(dueTime: appt.startMillis, nowMillis: nowMillis) {
+                let apptActionId = appointmentActionId(appointmentId: appt.id)
+                if let index = kept.firstIndex(where: { $0.leadId == lead.id && $0.actionId == apptActionId }) {
+                    if kept[index].dueTime != appt.startMillis || kept[index].contactName != cleanName {
+                        cancelRequestIds.insert(kept[index].id)
+                        let updated = ReminderAlarmState(leadId: lead.id, actionId: apptActionId, dueTime: appt.startMillis, title: "Appointment", contactName: cleanName)
+                        kept[index] = updated
+                        schedule.append(updated)
+                    }
+                } else if !syncedLeadIds.contains(lead.id) {
+                    let created = ReminderAlarmState(leadId: lead.id, actionId: apptActionId, dueTime: appt.startMillis, title: "Appointment", contactName: cleanName)
+                    kept.append(created)
+                    schedule.append(created)
+                }
+            }
+
+            let scheduledApptActionIds = Set(
+                lead.appointments
+                    .filter { $0.status == .scheduled && shouldRestoreAlarm(dueTime: $0.startMillis, nowMillis: nowMillis) }
+                    .map { appointmentActionId(appointmentId: $0.id) }
+            )
+            for existing in existingForLead where isAppointmentAlarmKey(existing.actionId) && !scheduledApptActionIds.contains(existing.actionId) {
+                if !syncedLeadIds.contains(lead.id) {
+                    cancelRequestIds.insert(existing.id)
+                    kept.removeAll { $0.id == existing.id }
+                }
+            }
+
+            let hasLeadAlarms = kept.contains(where: { $0.leadId == lead.id })
+            if !syncedLeadIds.contains(lead.id),
+               !hasLeadAlarms,
+               let followUpMillis = lead.followUpMillis,
+               shouldRestoreAlarm(dueTime: followUpMillis, nowMillis: nowMillis) {
+                let fallback = ReminderAlarmState(
+                    leadId: lead.id,
+                    actionId: legacyActionId(leadId: lead.id),
+                    dueTime: followUpMillis,
+                    title: "Follow up",
+                    contactName: cleanName
+                )
+                kept.append(fallback)
+                schedule.append(fallback)
+            } else if !syncedLeadIds.contains(lead.id),
+                      let legacyIdx = kept.firstIndex(where: { $0.leadId == lead.id && $0.actionId == legacyActionId(leadId: lead.id) }),
+                      let followUpMillis = lead.followUpMillis,
+                      shouldRestoreAlarm(dueTime: followUpMillis, nowMillis: nowMillis),
+                      kept[legacyIdx].dueTime != followUpMillis {
+                cancelRequestIds.insert(kept[legacyIdx].id)
+                let updated = ReminderAlarmState(
+                    leadId: lead.id,
+                    actionId: legacyActionId(leadId: lead.id),
+                    dueTime: followUpMillis,
+                    title: "Follow up",
+                    contactName: cleanName
+                )
+                kept[legacyIdx] = updated
+                schedule.append(updated)
+            }
+        }
+
+        return (kept: kept, cancelRequestIds: cancelRequestIds, schedule: schedule)
+    }
+
+    static func buildDailyDigest(
+        leads: [LeadNotificationSummary],
+        nowMillis: Int64,
+        calendar: Calendar = .current,
+        locale: Locale = Locale(identifier: "en_US_POSIX")
+    ) -> DailyDigestPlan? {
+        let todayStart = AppointmentAgenda.startOfDay(nowMillis, calendar: calendar)
+        let todayDate = Date(timeIntervalSince1970: Double(todayStart) / 1000)
+        let todayEndDate = calendar.date(byAdding: .day, value: 1, to: todayDate) ?? todayDate.addingTimeInterval(86_400)
+        let todayEnd = Int64(todayEndDate.timeIntervalSince1970 * 1000)
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.locale = locale
+        timeFormatter.timeZone = calendar.timeZone
+        timeFormatter.dateFormat = "h:mm a"
+
+        var followUps: [String] = []
+        var appointments: [String] = []
+
+        for lead in leads {
+            if lead.isClosed { continue }
+            let cleanName = lead.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : lead.name.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if !lead.isPaused {
+                if let followUpMillis = lead.followUpMillis, followUpMillis > 0 {
+                    if followUpMillis < todayStart {
+                        followUps.append("\(cleanName) · Overdue")
+                    } else if followUpMillis >= todayStart && followUpMillis < todayEnd {
+                        let formatted = timeFormatter.string(from: Date(timeIntervalSince1970: Double(followUpMillis) / 1000))
+                        followUps.append("\(cleanName) · \(formatted)")
+                    }
+                } else {
+                    followUps.append("\(cleanName) · Missing Plan")
+                }
+            }
+
+            let starts = AppointmentAgenda.digestAppointmentStarts(lead.appointments, dayStart: todayStart, dayEnd: todayEnd)
+            for start in starts {
+                let formatted = timeFormatter.string(from: Date(timeIntervalSince1970: Double(start) / 1000))
+                appointments.append("\(cleanName) · \(formatted)")
+            }
+        }
+
+        guard !followUps.isEmpty || !appointments.isEmpty else { return nil }
+        let totalCount = followUps.count + appointments.count
+        let title = "Today's schedule (\(totalCount))"
+        let summaryText: String
+        if !followUps.isEmpty && !appointments.isEmpty {
+            summaryText = "\(followUps.count) follow-up(s) and \(appointments.count) appointment(s) today"
+        } else if !followUps.isEmpty {
+            summaryText = "\(followUps.count) follow-up(s) due today"
+        } else {
+            summaryText = "\(appointments.count) appointment(s) today"
+        }
+
+        var bodyLines: [String] = []
+        if !followUps.isEmpty {
+            bodyLines.append("— Follow-ups —")
+            let shown = Array(followUps.prefix(maxLinesPerSection))
+            bodyLines.append(contentsOf: shown)
+            let remaining = followUps.count - shown.count
+            if remaining > 0 {
+                bodyLines.append("…and \(remaining) more")
+            }
+        }
+        if !appointments.isEmpty {
+            bodyLines.append("— Appointments —")
+            let shown = Array(appointments.prefix(maxLinesPerSection))
+            bodyLines.append(contentsOf: shown)
+            let remaining = appointments.count - shown.count
+            if remaining > 0 {
+                bodyLines.append("…and \(remaining) more")
+            }
+        }
+
+        return DailyDigestPlan(
+            followUps: followUps,
+            appointments: appointments,
+            title: title,
+            summaryText: summaryText,
+            bodyLines: bodyLines,
+            bodyText: ([summaryText] + bodyLines).joined(separator: "\n")
+        )
+    }
+
+    static func extractLeadId(fromUserInfo userInfo: [AnyHashable: Any]) -> String? {
+        if let leadId = (userInfo[extraLeadIdKey] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !leadId.isEmpty {
+            return leadId
+        }
+        if let leadId = (userInfo["leadId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !leadId.isEmpty {
+            return leadId
+        }
+        if let rawUrl = (userInfo[extraUrlKey] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let url = URL(string: rawUrl),
+           let leadId = AppointmentAgenda.leadId(from: url) {
+            return leadId
+        }
+        return nil
+    }
+}
+
 struct Lead: Identifiable {
     var id = ""
     var ownerId = ""
@@ -1479,25 +2404,35 @@ final class LeadsStore: ObservableObject {
                     if let error { self.error = error.localizedDescription; return }
                     self.error = nil
                     self.leads = (snapshot?.documents ?? []).map(Lead.init).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    ReminderNotificationService.shared.reconcileLeads(self.leads)
                 }
             }
     }
-    func createLead(_ lead: Lead, userID: String) async throws {
+    func createLead(_ lead: Lead, userID: String) async throws -> String {
         try validate(userID)
         let db = Firestore.firestore()
         let ref = db.collection("leads").document()
         var data = lead.data(userID: userID)
         data["timestamp"] = Timestamp(date: Date())
         let batch = db.batch()
+        var createdActions: [NextAction] = []
         if let date = lead.followUpDate {
             let due = Self.normalized(date)
             data["followUpDate"] = Timestamp(date: due)
             data["reminderMigrationVersion"] = 1
             let action = ref.collection("next_actions").document()
+            let dueMillis = Int64(due.timeIntervalSince1970 * 1000)
+            let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
             batch.setData(Self.reminderData(leadID: ref.documentID, userID: userID, date: due).merging(["id": action.documentID], uniquingKeysWith: { _, new in new }), forDocument: action)
+            createdActions.append(NextAction(id: action.documentID, leadId: ref.documentID, ownerId: userID, title: "Follow up", dueTime: dueMillis, createdAt: nowMillis))
         }
         batch.setData(data, forDocument: ref)
         try await batch.commit()
+        var createdLead = lead
+        createdLead.id = ref.documentID
+        createdLead.ownerId = userID
+        ReminderNotificationService.shared.syncLeadActions(lead: createdLead, actions: createdActions)
+        return ref.documentID
     }
     func updateLead(_ lead: Lead, original: Lead, userID: String) async throws {
         try validate(userID)
@@ -1566,6 +2501,9 @@ final class LeadsStore: ObservableObject {
         try validate(userID)
         guard !lead.id.isEmpty, lead.ownerId == userID else { throw StoreError.invalidLead }
         try await Firestore.firestore().collection("leads").document(lead.id).delete()
+        var deleted = lead
+        deleted.isClosed = true
+        ReminderNotificationService.shared.syncLeadActions(lead: deleted, actions: [])
     }
     private func validate(_ userID: String) throws {
         guard currentUserID == userID, Auth.auth().currentUser?.uid == userID else { throw StoreError.invalidSession }
@@ -1637,7 +2575,11 @@ final class LeadActivityStore: ObservableObject {
             Task { @MainActor in
                 guard let self, self.generation == token, Auth.auth().currentUser?.uid == userID else { return }
                 self.actionsLoading = false; self.actionsError = error?.localizedDescription
-                if let snapshot { self.actions = snapshot.documents.map { NextAction(document: $0, leadID: leadID) }.sorted { $0.dueTime == $1.dueTime ? $0.id < $1.id : $0.dueTime < $1.dueTime } }
+                if let snapshot {
+                    let loaded = snapshot.documents.map { NextAction(document: $0, leadID: leadID) }.sorted { $0.dueTime == $1.dueTime ? $0.id < $1.id : $0.dueTime < $1.dueTime }
+                    self.actions = loaded
+                    ReminderNotificationService.shared.syncActionsIfKnownLead(leadID: leadID, actions: loaded)
+                }
             }
         })
         listeners.append(lead.collection("activity_records").addSnapshotListener { [weak self] snapshot, error in
@@ -1692,6 +2634,7 @@ extension LeadsStore {
                         return nil
                     } catch { pointer?.pointee = error as NSError; return nil }
                 }
+                await refreshLeadNotifications(leadID: leadID, userID: userID)
                 return
             } catch {
                 let nsError = error as NSError, stale = StoreError.changedFollowUp as NSError
@@ -1699,6 +2642,26 @@ extension LeadsStore {
                 throw error
             }
         }
+    }
+    private func refreshLeadNotifications(leadID: String, userID: String) async {
+        guard Auth.auth().currentUser?.uid == userID else { return }
+        let leadRef = Firestore.firestore().collection("leads").document(leadID)
+        guard let parent = try? await leadRef.getDocument(),
+              parent.exists,
+              parent.data()?["ownerId"] as? String == userID,
+              let actionsSnap = try? await leadRef.collection("next_actions").getDocuments() else {
+            return
+        }
+        let d = parent.data() ?? [:]
+        var syncedLead = leads.first(where: { $0.id == leadID }) ?? Lead()
+        syncedLead.id = leadID
+        syncedLead.ownerId = userID
+        syncedLead.name = d["name"] as? String ?? syncedLead.name
+        syncedLead.isPaused = d["isPaused"] as? Bool ?? false
+        syncedLead.isClosed = d["isClosed"] as? Bool ?? false
+        syncedLead.followUpDate = Lead.date(d["followUpDate"])
+        let actions = actionsSnap.documents.map { NextAction(document: $0, leadID: leadID) }
+        ReminderNotificationService.shared.syncLeadActions(lead: syncedLead, actions: actions)
     }
     private static func followUpPatch(_ pending: [NextAction], paused: Bool, closed: Bool) -> Any {
         guard let millis = OutcomeSavePlanner.followUpMillis(pending, paused: paused, closed: closed) else { return FieldValue.delete() }
@@ -1800,7 +2763,7 @@ extension LeadsStore {
         note: String = "",
         scheduleReminder: Bool = true,
         baseUpdatedAtMillis: Int64? = nil
-    ) async throws {
+    ) async throws -> String {
         try validate(userID)
         guard !leadID.isEmpty, !leadID.contains("/") else { throw StoreError.invalidLead }
         let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -1879,6 +2842,7 @@ extension LeadsStore {
             }
             transaction.updateData(updates, forDocument: ref)
         }
+        return targetID
     }
     func rescheduleAppointment(
         leadID: String,
@@ -2130,5 +3094,308 @@ extension LeadsStore {
                 return nil
             }
         }
+    }
+}
+
+@MainActor
+final class ReminderNotificationService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
+    static let shared = ReminderNotificationService()
+
+    @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
+    @Published private(set) var persistedAlarms: [ReminderAlarmState] = []
+    @Published var dailyDigestEnabled: Bool
+    @Published var dailyDigestHour: Int
+    @Published var dailyDigestMinute: Int
+    @Published var statusNotice: String?
+
+    var onOpenLead: ((String) -> Void)?
+    private var pendingOpenedLeadID: String?
+    private var syncedLeadIDs = Set<String>()
+    private var latestLeads: [Lead] = []
+
+    private let center = UNUserNotificationCenter.current()
+    private let defaults = UserDefaults.standard
+    private let alarmsKey = "rcrm_reminder_alarms.persisted"
+    private let syncedLeadsKey = "rcrm_reminder_alarms.synced_leads"
+    private let digestEnabledKey = "rcrm_daily_digest.enabled"
+    private let digestHourKey = "rcrm_daily_digest.hour"
+    private let digestMinuteKey = "rcrm_daily_digest.minute"
+
+    var isAuthorized: Bool {
+        authorizationStatus == .authorized || authorizationStatus == .provisional || authorizationStatus == .ephemeral
+    }
+
+    var needsPermissionPrompt: Bool {
+        authorizationStatus == .notDetermined
+    }
+
+    var isDenied: Bool {
+        authorizationStatus == .denied
+    }
+
+    var dailyDigestTimeDate: Date {
+        var comps = DateComponents()
+        comps.hour = dailyDigestHour
+        comps.minute = dailyDigestMinute
+        return Calendar.current.date(from: comps) ?? Date()
+    }
+
+    override init() {
+        if defaults.object(forKey: digestEnabledKey) == nil {
+            dailyDigestEnabled = true
+        } else {
+            dailyDigestEnabled = defaults.bool(forKey: digestEnabledKey)
+        }
+        if defaults.object(forKey: digestHourKey) == nil {
+            dailyDigestHour = ReminderNotificationPlanner.defaultDigestHour
+        } else {
+            dailyDigestHour = defaults.integer(forKey: digestHourKey)
+        }
+        if defaults.object(forKey: digestMinuteKey) == nil {
+            dailyDigestMinute = ReminderNotificationPlanner.defaultDigestMinute
+        } else {
+            dailyDigestMinute = defaults.integer(forKey: digestMinuteKey)
+        }
+        if let data = defaults.data(forKey: alarmsKey),
+           let decoded = try? JSONDecoder().decode([ReminderAlarmState].self, from: data) {
+            persistedAlarms = decoded
+        } else {
+            persistedAlarms = []
+        }
+        syncedLeadIDs = Set(defaults.stringArray(forKey: syncedLeadsKey) ?? [])
+        super.init()
+    }
+
+    func installDelegate() {
+        center.delegate = self
+        Task { await refreshAuthorizationStatus() }
+    }
+
+    func consumePendingLeadID() -> String? {
+        defer { pendingOpenedLeadID = nil }
+        return pendingOpenedLeadID
+    }
+
+    func refreshAuthorizationStatus() async {
+        let settings = await center.notificationSettings()
+        authorizationStatus = settings.authorizationStatus
+        if isAuthorized {
+            restorePersistedAlarms()
+            refreshDailyDigest(leads: latestLeads)
+        }
+    }
+
+    func requestPermission() async {
+        do {
+            _ = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+        } catch {
+            statusNotice = error.localizedDescription
+        }
+        await refreshAuthorizationStatus()
+        if isDenied {
+            statusNotice = "Notifications are turned off. Enable them in Settings to receive reminder alerts and your daily briefing."
+        } else if isAuthorized {
+            statusNotice = nil
+            reconcileLeads(latestLeads)
+        }
+    }
+
+    func setDailyDigestEnabled(_ enabled: Bool) {
+        dailyDigestEnabled = enabled
+        defaults.set(enabled, forKey: digestEnabledKey)
+        refreshDailyDigest(leads: latestLeads)
+    }
+
+    func setDailyDigestTime(_ date: Date) {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+        dailyDigestHour = comps.hour ?? ReminderNotificationPlanner.defaultDigestHour
+        dailyDigestMinute = comps.minute ?? ReminderNotificationPlanner.defaultDigestMinute
+        defaults.set(dailyDigestHour, forKey: digestHourKey)
+        defaults.set(dailyDigestMinute, forKey: digestMinuteKey)
+        refreshDailyDigest(leads: latestLeads)
+    }
+
+    func sendDailyDigestPreview() async {
+        if !isAuthorized {
+            await requestPermission()
+            guard isAuthorized else { return }
+        }
+        let summaries = latestLeads.map(Self.summary(for:))
+        let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
+        guard let plan = ReminderNotificationPlanner.buildDailyDigest(leads: summaries, nowMillis: nowMillis) else {
+            statusNotice = "No follow-ups or appointments are due today."
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = plan.title
+        content.subtitle = plan.summaryText
+        content.body = plan.bodyLines.joined(separator: "\n")
+        content.sound = .default
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: "\(ReminderNotificationPlanner.dailyDigestIdentifier).preview", content: content, trigger: trigger)
+        do {
+            try await center.add(request)
+            statusNotice = "Daily digest preview sent."
+        } catch {
+            statusNotice = error.localizedDescription
+        }
+    }
+
+    func syncActionsIfKnownLead(leadID: String, actions: [NextAction]) {
+        guard let lead = latestLeads.first(where: { $0.id == leadID }) else { return }
+        syncLeadActions(lead: lead, actions: actions)
+    }
+
+    func syncLeadActions(lead: Lead, actions: [NextAction]) {
+        syncedLeadIDs.insert(lead.id)
+        defaults.set(Array(syncedLeadIDs), forKey: syncedLeadsKey)
+        let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
+        let sync = ReminderNotificationPlanner.syncAlarms(
+            leadId: lead.id,
+            contactName: lead.name,
+            isPaused: lead.isPaused,
+            isClosed: lead.isClosed,
+            persisted: persistedAlarms,
+            actions: actions,
+            nowMillis: nowMillis
+        )
+        if !sync.cancelRequestIds.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: Array(sync.cancelRequestIds))
+            center.removeDeliveredNotifications(withIdentifiers: Array(sync.cancelRequestIds))
+        }
+        var updated = persistedAlarms.filter { $0.leadId != lead.id || !sync.cancelActionIds.contains($0.actionId) }
+        for state in sync.schedule {
+            updated.removeAll { $0.id == state.id }
+            updated.append(state)
+            scheduleNotification(state, nowMillis: nowMillis)
+        }
+        savePersistedAlarms(updated)
+    }
+
+    func reconcileLeads(_ leads: [Lead]) {
+        latestLeads = leads
+        let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
+        let summaries = leads.map(Self.summary(for:))
+        let result = ReminderNotificationPlanner.reconcileLeadSummaries(
+            leads: summaries,
+            persisted: persistedAlarms,
+            syncedLeadIds: syncedLeadIDs,
+            nowMillis: nowMillis
+        )
+        if !result.cancelRequestIds.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: Array(result.cancelRequestIds))
+            center.removeDeliveredNotifications(withIdentifiers: Array(result.cancelRequestIds))
+        }
+        for state in result.schedule {
+            scheduleNotification(state, nowMillis: nowMillis)
+        }
+        savePersistedAlarms(result.kept)
+        refreshDailyDigest(leads: leads)
+    }
+
+    func restorePersistedAlarms() {
+        guard isAuthorized else { return }
+        let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
+        let kept = persistedAlarms.filter {
+            ReminderNotificationPlanner.shouldRestoreAlarm(dueTime: $0.dueTime, nowMillis: nowMillis)
+        }
+        let expiredIds = Set(persistedAlarms.map(\.id)).subtracting(Set(kept.map(\.id)))
+        if !expiredIds.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: Array(expiredIds))
+        }
+        for state in kept {
+            scheduleNotification(state, nowMillis: nowMillis)
+        }
+        savePersistedAlarms(kept)
+    }
+
+    func refreshDailyDigest(leads: [Lead]) {
+        let identifier = ReminderNotificationPlanner.dailyDigestIdentifier
+        guard isAuthorized, dailyDigestEnabled else {
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            return
+        }
+        let summaries = leads.map(Self.summary(for:))
+        let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
+        guard let plan = ReminderNotificationPlanner.buildDailyDigest(leads: summaries, nowMillis: nowMillis) else {
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = plan.title
+        content.subtitle = plan.summaryText
+        content.body = plan.bodyLines.joined(separator: "\n")
+        content.sound = .default
+        var dateComponents = DateComponents()
+        dateComponents.hour = dailyDigestHour
+        dateComponents.minute = dailyDigestMinute
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        center.add(request)
+    }
+
+    private func scheduleNotification(_ state: ReminderAlarmState, nowMillis: Int64) {
+        guard isAuthorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = state.notificationTitle
+        content.body = state.notificationBody
+        content.sound = .default
+        content.userInfo = [
+            ReminderNotificationPlanner.extraLeadIdKey: state.leadId,
+            ReminderNotificationPlanner.extraReminderIdKey: state.actionId,
+            ReminderNotificationPlanner.extraTitleKey: state.notificationTitle,
+            ReminderNotificationPlanner.extraContactNameKey: state.notificationBody,
+            ReminderNotificationPlanner.extraUrlKey: state.deepLinkURLString
+        ]
+        let fireDate = ReminderNotificationPlanner.fireDate(dueTime: state.dueTime, nowMillis: nowMillis)
+        let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: fireDate)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+        let request = UNNotificationRequest(identifier: state.id, content: content, trigger: trigger)
+        center.add(request)
+    }
+
+    private func savePersistedAlarms(_ alarms: [ReminderAlarmState]) {
+        persistedAlarms = alarms.sorted { $0.dueTime == $1.dueTime ? $0.id < $1.id : $0.dueTime < $1.dueTime }
+        if let data = try? JSONEncoder().encode(persistedAlarms) {
+            defaults.set(data, forKey: alarmsKey)
+        }
+    }
+
+    private static func summary(for lead: Lead) -> LeadNotificationSummary {
+        LeadNotificationSummary(
+            id: lead.id,
+            name: lead.name,
+            followUpMillis: lead.followUpDate.map { Int64($0.timeIntervalSince1970 * 1000) },
+            isPaused: lead.isPaused,
+            isClosed: lead.isClosed,
+            appointments: lead.appointments
+        )
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        let extractedLeadID = ReminderNotificationPlanner.extractLeadId(fromUserInfo: userInfo)
+        Task { @MainActor in
+            if let leadID = extractedLeadID {
+                if let onOpenLead = self.onOpenLead {
+                    onOpenLead(leadID)
+                } else {
+                    self.pendingOpenedLeadID = leadID
+                }
+            }
+        }
+        completionHandler()
     }
 }

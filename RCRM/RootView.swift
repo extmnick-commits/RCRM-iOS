@@ -1,3 +1,4 @@
+import EventKit
 import SwiftUI
 
 extension Color {
@@ -6,6 +7,7 @@ extension Color {
     static let neonCyan = Color(hex: 0x2EE7FF), neonGreen = Color(hex: 0x3DFF9A), neonPink = Color(hex: 0xFF3B8D), neonPurple = Color(hex: 0xB14CFF), neonBlue = Color(hex: 0x4C8DFF), neonOrange = Color(hex: 0xFFA726)
     static let textPrimary = Color(hex: 0xF4F7FF), textSecondary = Color(hex: 0x9AA6BD), textMuted = Color(hex: 0x7E8BA3)
     private init(hex: UInt) { self.init(red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255) }
+    static func calendarTint(_ hex: Int) -> Color { Color(hex: UInt(hex & 0xFFFFFF)) }
 }
 extension View {
     func frostedGlass(cornerRadius: CGFloat = 20, borderColor: Color = .glassFrost) -> some View {
@@ -66,6 +68,26 @@ private func openLocationOrMeeting(_ rawLocation: String?, _ open: OpenURLAction
     }
 }
 
+@MainActor
+private func mergedAgenda(from leads: [Lead], calendar: GoogleCalendarService) -> [AppointmentAgenda.AgendaItem] {
+    let names = leads.map { (id: $0.id, name: $0.name) }
+    return AppointmentAgenda.matchAgenda(
+        appointments: allAgendaItems(from: leads),
+        events: calendar.events,
+        suggestedLeadIdsByEventKey: AppointmentAgenda.suggestedLeadIds(events: calendar.events, leads: names),
+        localEventKeysByAppointmentId: calendar.localEventKeys
+    ).map { item in
+        var copy = item
+        if copy.leadName.isEmpty, let lead = leads.first(where: { $0.id == copy.leadId }) {
+            copy.leadName = lead.name
+            if copy.phone.isEmpty { copy.phone = lead.phone }
+            if copy.category.isEmpty { copy.category = lead.category }
+            if copy.ownerId.isEmpty { copy.ownerId = lead.ownerId }
+        }
+        return copy
+    }
+}
+
 private func allAgendaItems(from leads: [Lead]) -> [AppointmentAgenda.AgendaItem] {
     leads.flatMap { lead in
         lead.appointments.map { record in
@@ -96,6 +118,11 @@ struct RootView: View {
             else if let user = session.user { AppShell(userID: user.uid).id(user.uid) }
             else { SignInView() }
         }.preferredColorScheme(.dark).tint(.neonCyan)
+            .onOpenURL { url in
+                if let leadID = AppointmentAgenda.leadId(from: url) {
+                    session.pendingLeadID = leadID
+                }
+            }
     }
 }
 struct SetupView: View {
@@ -140,7 +167,10 @@ struct SignInView: View {
 struct AppShell: View {
     let userID: String
     @StateObject private var store = LeadsStore()
+    @StateObject private var calendar = GoogleCalendarService()
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var notifications: ReminderNotificationService
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingAdd = false
     @State private var selectedTab = 0
     var body: some View {
@@ -154,8 +184,28 @@ struct AppShell: View {
             NavigationStack { PipelinesView(userID: userID) }.tabItem { Label("Pipelines", systemImage: "chart.bar") }.tag(3)
             NavigationStack { ContactsView(userID: userID) }.tabItem { Label("Contacts", systemImage: "person.2") }.tag(4)
         }.environmentObject(store)
+            .environmentObject(calendar)
             .sheet(isPresented: $showingAdd) { LeadFormSheet(userID: userID) }.environmentObject(store)
-            .onAppear { store.start(userID: userID) }.onDisappear { store.stop() }
+            .sheet(isPresented: Binding(get: { session.pendingLeadID != nil }, set: { if !$0 { session.pendingLeadID = nil } })) {
+                if let leadID = session.pendingLeadID {
+                    NavigationStack { LeadDetailView(leadID: leadID, userID: userID) }
+                }
+            }
+            .onAppear {
+                store.start(userID: userID)
+                Task {
+                    await calendar.prepare(monthStartMillis: AppointmentAgenda.startOfMonthContaining(Int64(Date().timeIntervalSince1970 * 1000)))
+                    await notifications.refreshAuthorizationStatus()
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task {
+                    await calendar.prepare(monthStartMillis: AppointmentAgenda.startOfMonthContaining(Int64(Date().timeIntervalSince1970 * 1000)))
+                    await notifications.refreshAuthorizationStatus()
+                }
+            }
+            .onDisappear { store.stop() }
             .alert("RCRM", isPresented: Binding(get: { store.error != nil || session.error != nil }, set: { if !$0 { store.error = nil; session.error = nil } })) { Button("OK") { store.error = nil; session.error = nil } } message: { Text(store.error ?? session.error ?? "") }
     }
 }
@@ -385,18 +435,38 @@ private struct AppointmentEditorContext: Identifiable {
 struct HomeView: View {
     let userID: String
     @EnvironmentObject private var store: LeadsStore
+    @EnvironmentObject private var calendar: GoogleCalendarService
+    @EnvironmentObject private var notifications: ReminderNotificationService
     @Binding var showingAdd: Bool
     var onOpenAgenda: () -> Void = {}
     @State private var group = 0
     @State private var outcomeContext: AppointmentOutcomeContext?
+    @State private var showingCalendarSettings = false
+    @State private var showingNotificationSettings = false
     @State private var nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
 
     private var upcomingItems: [AppointmentAgenda.AgendaItem] {
-        AppointmentAgenda.upcomingEvents(allAgendaItems(from: store.leads), nowMillis: nowMillis)
+        AppointmentAgenda.upcomingEvents(mergedAgenda(from: store.leads, calendar: calendar), nowMillis: nowMillis)
     }
 
     var body: some View { ZStack { SpaceBackgroundView(); ScrollView { VStack(alignment: .leading, spacing: 20) {
         Text("RCRM").font(.title2.bold())
+        if calendar.needsGoogleLink {
+            LinkGoogleCalendarButton { showingCalendarSettings = true }
+        }
+        if !notifications.isAuthorized {
+            Button {
+                showingNotificationSettings = true
+            } label: {
+                Label(notifications.isDenied ? "Turn On Reminder Alerts in Settings" : "Enable Reminder Alerts & Daily Briefing", systemImage: "bell.badge.fill")
+                    .bold()
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            }
+            .background(Color.neonPurple.opacity(0.24), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.neonPurple.opacity(0.8), lineWidth: 1))
+            .foregroundStyle(Color.textPrimary)
+        }
         if !upcomingItems.isEmpty {
             UpNextBannerView(
                 items: upcomingItems,
@@ -422,7 +492,24 @@ struct HomeView: View {
             }
         } }
     }.padding() } }.navigationTitle("Home")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showingNotificationSettings = true
+                } label: {
+                    Image(systemName: notifications.isAuthorized ? "bell.badge.fill" : "bell.slash.fill")
+                        .foregroundStyle(notifications.isAuthorized ? Color.neonCyan : Color.neonOrange)
+                }
+                .accessibilityLabel("Notifications & Daily Briefing")
+            }
+        }
         .onAppear { nowMillis = Int64(Date().timeIntervalSince1970 * 1000) }
+        .sheet(isPresented: $showingCalendarSettings) {
+            CalendarSettingsSheet(calendar: calendar, monthStartMillis: AppointmentAgenda.startOfMonthContaining(nowMillis))
+        }
+        .sheet(isPresented: $showingNotificationSettings) {
+            NotificationSettingsSheet(notifications: notifications)
+        }
         .sheet(item: $outcomeContext) { ctx in
             OutcomeSheetView(lead: ctx.lead, userID: userID, appointmentID: ctx.appointmentID)
         }
@@ -433,12 +520,17 @@ struct HomeView: View {
 struct AppointmentsView: View {
     let userID: String
     @EnvironmentObject private var store: LeadsStore
+    @EnvironmentObject private var calendar: GoogleCalendarService
     @Environment(\.openURL) private var openURL
     @State private var monthStartMillis = AppointmentAgenda.startOfMonthContaining(Int64(Date().timeIntervalSince1970 * 1000))
     @State private var selectedDayMillis: Int64? = nil
     @State private var monthWindow: AppointmentAgenda.MonthWindow = .upcoming
+    @State private var eventSource: AppointmentAgenda.EventSource = .all
+    @State private var showingCalendarSettings = false
     @State private var editorContext: AppointmentEditorContext?
     @State private var outcomeContext: AppointmentOutcomeContext?
+    @State private var linkingItem: AppointmentAgenda.AgendaItem?
+    @State private var previewEvent: EKEvent?
     @State private var workingID: String?
     @State private var errorMessage: String?
 
@@ -462,7 +554,7 @@ struct AppointmentsView: View {
     }
 
     private var allItems: [AppointmentAgenda.AgendaItem] {
-        allAgendaItems(from: store.leads)
+        mergedAgenda(from: store.leads, calendar: calendar)
     }
 
     private var daysWithEvents: Set<Int64> {
@@ -470,8 +562,12 @@ struct AppointmentsView: View {
         let rangeEnd = AppointmentAgenda.shiftMonth(rangeStart, delta: 1)
         return Set(
             allItems
-                .filter { $0.startMillis >= rangeStart && $0.startMillis < rangeEnd && $0.status != .canceled }
-                .map { AppointmentAgenda.startOfDay($0.startMillis) }
+                .filter { item in
+                    guard item.status != .canceled else { return false }
+                    let day = AppointmentAgenda.eventDayStart(item.startMillis, allDay: item.allDay)
+                    return day >= rangeStart && day < rangeEnd
+                }
+                .map { AppointmentAgenda.eventDayStart($0.startMillis, allDay: $0.allDay) }
         )
     }
 
@@ -481,7 +577,8 @@ struct AppointmentsView: View {
             monthStartMillis: monthStartMillis,
             monthWindow: monthWindow,
             selectedDayMillis: selectedDayMillis,
-            todayStartMillis: todayStartMillis
+            todayStartMillis: todayStartMillis,
+            source: eventSource
         )
     }
 
@@ -489,6 +586,10 @@ struct AppointmentsView: View {
         ZStack {
             SpaceBackgroundView()
             VStack(spacing: 14) {
+                if calendar.needsGoogleLink {
+                    LinkGoogleCalendarButton { showingCalendarSettings = true }
+                        .padding(.horizontal)
+                }
                 VStack(spacing: 12) {
                     HStack(spacing: 12) {
                         Button {
@@ -548,6 +649,21 @@ struct AppointmentsView: View {
                         }
                     }
 
+                    HStack(spacing: 8) {
+                        ForEach(AppointmentAgenda.EventSource.allCases) { source in
+                            let selected = eventSource == source
+                            Button { eventSource = source } label: {
+                                Text(source.label)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(selected ? Color.neonPurple : Color.textSecondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(selected ? Color.neonPurple.opacity(0.18) : Color.clear, in: Capsule())
+                                    .overlay(Capsule().stroke(selected ? Color.neonPurple : Color.glassFrost, lineWidth: 1))
+                            }.buttonStyle(.plain)
+                        }
+                    }
+
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
@@ -595,6 +711,26 @@ struct AppointmentsView: View {
                 .frostedGlass()
                 .padding(.horizontal)
 
+                if !calendar.hasAccess || calendar.syncNotice != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !calendar.hasAccess {
+                            Text("Connect Google Calendar to show events here and add new appointments to it.")
+                                .font(.footnote)
+                                .foregroundStyle(Color.textSecondary)
+                            Button("Connect calendar") { showingCalendarSettings = true }
+                                .font(.footnote.weight(.bold))
+                                .foregroundStyle(Color.neonCyan)
+                        }
+                        if let notice = calendar.syncNotice {
+                            Text(notice).font(.footnote).foregroundStyle(Color.neonOrange)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .frostedGlass(cornerRadius: 16)
+                    .padding(.horizontal)
+                }
+
                 if store.isLoading && store.leads.isEmpty {
                     Spacer()
                     ProgressView("Loading agenda…")
@@ -602,9 +738,9 @@ struct AppointmentsView: View {
                 } else if visibleEntries.isEmpty {
                     Spacer()
                     ContentUnavailableView(
-                        selectedDayMillis != nil ? "No appointments on this day" : (monthWindow == .upcoming ? "No upcoming appointments this month" : "No appointments this month"),
+                        AppointmentAgenda.emptyMessage(monthWindow: monthWindow, source: eventSource, daySelected: selectedDayMillis != nil),
                         systemImage: "calendar.badge.clock",
-                        description: Text(selectedDayMillis != nil ? "Tap the selected day again to view the month, or tap + to schedule." : (monthWindow == .upcoming ? "Switch to All Month to see earlier days, or tap + to schedule." : "Tap + to schedule an appointment with any contact."))
+                        description: Text(calendar.hasAccess ? "Tap + to schedule an appointment. It is added to the calendar you choose." : "Connect calendar to include Google Calendar events.")
                     )
                     Spacer()
                 } else {
@@ -632,7 +768,9 @@ struct AppointmentsView: View {
                                     },
                                     onMarkOutcome: { outcome in
                                         markVisitOutcome(item, outcome: outcome)
-                                    }
+                                    },
+                                    onOpenCalendar: { openCalendar(item) },
+                                    onLink: { linkingItem = item }
                                 )
                             }
                         }
@@ -645,6 +783,13 @@ struct AppointmentsView: View {
         }
         .navigationTitle("Appointments")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showingCalendarSettings = true } label: {
+                    Text(calendar.needsGoogleLink ? "Link" : "Google")
+                        .font(.subheadline.weight(.bold))
+                }
+                .accessibilityLabel("Link Google Calendar")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     editorContext = AppointmentEditorContext(lead: nil, existing: nil)
@@ -660,6 +805,24 @@ struct AppointmentsView: View {
         }
         .sheet(item: $outcomeContext) { ctx in
             OutcomeSheetView(lead: ctx.lead, userID: userID, appointmentID: ctx.appointmentID)
+        }
+        .sheet(isPresented: $showingCalendarSettings) {
+            CalendarSettingsSheet(calendar: calendar, monthStartMillis: monthStartMillis)
+        }
+        .sheet(item: $linkingItem) { item in
+            LinkCalendarEventSheet(item: item, userID: userID, calendar: calendar)
+        }
+        .sheet(isPresented: Binding(get: { previewEvent != nil }, set: { if !$0 { previewEvent = nil } })) {
+            if let previewEvent {
+                CalendarEventPreview(event: previewEvent) {
+                    self.previewEvent = nil
+                    Task { await calendar.load(monthStartMillis: monthStartMillis) }
+                }
+            }
+        }
+        .onAppear { Task { await calendar.load(monthStartMillis: monthStartMillis) } }
+        .onChange(of: monthStartMillis) { _, month in
+            Task { await calendar.load(monthStartMillis: month) }
         }
         .alert("Appointments", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK") { errorMessage = nil }
@@ -695,9 +858,27 @@ struct AppointmentsView: View {
                     outcome: outcome,
                     baseUpdatedAtMillis: item.updatedAtMillis
                 )
+                if outcome == .canceled {
+                    let sole = store.leads.first(where: { $0.id == item.leadId })?.appointments.count == 1
+                    calendar.syncNotice = await calendar.cancelAppointment(
+                        leadId: item.leadId,
+                        appointmentId: item.appointmentId,
+                        soleAppointment: sole
+                    )
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func openCalendar(_ item: AppointmentAgenda.AgendaItem) {
+        if let event = calendar.event(for: item) {
+            previewEvent = event
+            return
+        }
+        if let url = AppointmentAgenda.calendarAppURL(at: item.startMillis) {
+            openURL(url)
         }
     }
 }
@@ -710,24 +891,43 @@ struct AgendaEntryCard: View {
     let onReschedule: () -> Void
     let onCancel: () -> Void
     let onMarkOutcome: (AppointmentOutcome) -> Void
+    let onOpenCalendar: () -> Void
+    let onLink: () -> Void
     @Environment(\.openURL) private var openURL
+
+    private var showsCrmActions: Bool { item.explicitCrm && !item.leadId.isEmpty && !item.appointmentId.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
+                Circle().fill(Color.calendarTint(item.calendarColor)).frame(width: 10, height: 10).padding(.top, 6)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.startDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()))
+                    Text(item.allDay ? item.startDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) : item.startDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()))
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(Color.neonCyan)
                     Text(item.leadName.isEmpty ? item.title : item.leadName)
                         .font(.headline)
                         .foregroundStyle(Color.textPrimary)
+                    if !item.leadName.isEmpty && item.title != item.leadName && !item.title.hasPrefix("Appointment:") {
+                        Text(item.title).font(.caption).foregroundStyle(Color.textSecondary)
+                    }
+                    Text(AppointmentAgenda.eventSubtitle(
+                        calendarDisplayName: item.calendarDisplayName,
+                        linkedLeadName: item.explicitCrm ? (item.leadName.isEmpty ? nil : item.leadName) : nil
+                    ))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.textSecondary)
                 }
                 Spacer()
                 HStack(spacing: 6) {
-                    AppointmentStatusBadge(status: item.status)
+                    if showsCrmActions { AppointmentStatusBadge(status: item.status) }
                     CategoryBadge(category: item.category)
                 }
+            }
+            if item.timeDrifted {
+                Text("The calendar time differs from the time saved in RCRM.")
+                    .font(.caption)
+                    .foregroundStyle(Color.neonOrange)
             }
 
             if let loc = item.location, !loc.isEmpty {
@@ -748,37 +948,56 @@ struct AgendaEntryCard: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Button(action: onLogOutcome) {
-                        Label("Log Outcome", systemImage: "square.and.pencil").lineLimit(1)
-                    }
-                    Button(action: onReschedule) {
-                        Label("Reschedule", systemImage: "calendar.badge.clock").lineLimit(1)
-                    }
-                }
-                HStack(spacing: 10) {
-                    if item.status == .scheduled {
-                        Button(role: .destructive, action: onCancel) {
-                            Label("Cancel", systemImage: "xmark.circle").lineLimit(1)
+                if showsCrmActions {
+                    HStack(spacing: 10) {
+                        Button(action: onLogOutcome) {
+                            Label("Log Outcome", systemImage: "square.and.pencil").lineLimit(1)
+                        }
+                        Button(action: onReschedule) {
+                            Label("Reschedule", systemImage: "calendar.badge.clock").lineLimit(1)
                         }
                     }
-                    if !item.leadId.isEmpty {
+                    HStack(spacing: 10) {
+                        if item.status == .scheduled {
+                            Button(role: .destructive, action: onCancel) {
+                                Label("Cancel", systemImage: "xmark.circle").lineLimit(1)
+                            }
+                        }
                         NavigationLink {
                             LeadDetailView(leadID: item.leadId, userID: userID)
                         } label: {
                             Label("Open Contact", systemImage: "person.crop.circle").lineLimit(1)
                         }
-                    }
-                    Menu {
-                        Button("Mark Completed") { onMarkOutcome(.completed) }
-                        Button("Mark No-Show") { onMarkOutcome(.noShow) }
-                        if item.status != .canceled {
-                            Button("Cancel Appointment", role: .destructive) { onCancel() }
+                        Button(action: onOpenCalendar) {
+                            Label("Calendar", systemImage: "calendar").lineLimit(1)
                         }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Menu {
+                            Button("Mark Completed") { onMarkOutcome(.completed) }
+                            Button("Mark No-Show") { onMarkOutcome(.noShow) }
+                            if item.status != .canceled {
+                                Button("Cancel Appointment", role: .destructive) { onCancel() }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("More appointment actions")
                     }
-                    .accessibilityLabel("More appointment actions")
+                } else {
+                    HStack(spacing: 10) {
+                        Button(action: onOpenCalendar) {
+                            Label("Open in Calendar", systemImage: "calendar").lineLimit(1)
+                        }
+                        Button(action: onLink) {
+                            Label(item.suggestedLeadId == nil ? "Link to contact" : "Link suggested contact", systemImage: "link").lineLimit(1)
+                        }
+                        if !item.leadId.isEmpty {
+                            NavigationLink {
+                                LeadDetailView(leadID: item.leadId, userID: userID)
+                            } label: {
+                                Label("Open Contact", systemImage: "person.crop.circle").lineLimit(1)
+                            }
+                        }
+                    }
                 }
             }
             .buttonStyle(.bordered)
@@ -799,6 +1018,7 @@ struct AppointmentFormSheet: View {
     let initialLead: Lead?
     let existing: AppointmentRecord?
     @EnvironmentObject private var store: LeadsStore
+    @EnvironmentObject private var calendar: GoogleCalendarService
     @Environment(\.dismiss) private var dismiss
     @State private var selectedLeadID: String
     @State private var date: Date
@@ -887,6 +1107,7 @@ struct AppointmentFormSheet: View {
         error = nil
         Task {
             do {
+                let appointmentID: String
                 if let existing {
                     try await store.rescheduleAppointment(
                         leadID: resolvedLeadID,
@@ -897,8 +1118,9 @@ struct AppointmentFormSheet: View {
                         baseUpdatedAtMillis: existing.updatedAtMillis,
                         note: note
                     )
+                    appointmentID = existing.id
                 } else {
-                    try await store.saveAppointment(
+                    appointmentID = try await store.saveAppointment(
                         leadID: resolvedLeadID,
                         userID: userID,
                         startDate: date,
@@ -907,6 +1129,18 @@ struct AppointmentFormSheet: View {
                         scheduleReminder: scheduleReminder
                     )
                 }
+                let lead = store.leads.first(where: { $0.id == resolvedLeadID }) ?? initialLead
+                let count = lead?.appointments.count ?? 1
+                calendar.syncNotice = await calendar.syncAppointment(
+                    leadId: resolvedLeadID,
+                    leadName: lead?.name ?? "Lead",
+                    phone: lead?.phone ?? "",
+                    appointmentId: appointmentID,
+                    start: date,
+                    location: location,
+                    notes: note,
+                    soleAppointment: count <= 1
+                )
                 dismiss()
             } catch {
                 self.error = error.localizedDescription
@@ -1306,6 +1540,7 @@ struct LeadPipelineCardView: View {
 struct LeadDetailView: View {
     let leadID: String, userID: String
     @EnvironmentObject private var store: LeadsStore
+    @EnvironmentObject private var calendar: GoogleCalendarService
     @Environment(\.openURL) private var openURL
     @StateObject private var activity = LeadActivityStore()
     @State private var editing = false
@@ -1551,6 +1786,12 @@ struct LeadDetailView: View {
                     outcome: .canceled,
                     baseUpdatedAtMillis: appt.updatedAtMillis
                 )
+                let sole = store.leads.first(where: { $0.id == leadID })?.appointments.count == 1
+                calendar.syncNotice = await calendar.cancelAppointment(
+                    leadId: leadID,
+                    appointmentId: appt.id,
+                    soleAppointment: sole
+                )
             } catch {
                 actionError = error.localizedDescription
             }
@@ -1662,7 +1903,7 @@ struct LeadFormSheet: View {
         Task {
             do {
                 if let existing { try await store.updateLead(lead, original: existing, userID: userID) }
-                else { try await store.createLead(lead, userID: userID) }
+                else { _ = try await store.createLead(lead, userID: userID) }
                 dismiss()
             } catch { self.error = error.localizedDescription; saving = false }
         }
@@ -1977,5 +2218,127 @@ struct ContactNotesSheet: View {
                 saving = false
             }
         }
+    }
+}
+
+struct NotificationSettingsSheet: View {
+    @ObservedObject var notifications: ReminderNotificationService
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                SpaceBackgroundView()
+                List {
+                    Section("Reminder Alerts") {
+                        if notifications.isAuthorized {
+                            Label("Notifications are on", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(Color.neonGreen)
+                            Text("Open reminders and scheduled appointments deliver local alerts on this iPhone. Tapping an alert opens the contact in RCRM.")
+                                .font(.footnote)
+                                .foregroundStyle(Color.textSecondary)
+                        } else if notifications.isDenied {
+                            Label("Notifications are turned off", systemImage: "bell.slash.fill")
+                                .foregroundStyle(Color.neonPink)
+                            Text("Turn on Notifications in iOS Settings so RCRM can alert you when reminders and appointments are due.")
+                                .font(.footnote)
+                                .foregroundStyle(Color.textSecondary)
+                            Button("Open Settings") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    openURL(url)
+                                }
+                            }
+                        } else {
+                            Text("Allow notifications so RCRM can alert you when reminders are due and send your daily follow-up briefing.")
+                                .font(.footnote)
+                                .foregroundStyle(Color.textSecondary)
+                            Button {
+                                Task { await notifications.requestPermission() }
+                            } label: {
+                                Label("Enable Notifications", systemImage: "bell.badge.fill")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.neonCyan)
+                            .foregroundStyle(.black)
+                        }
+                    }.listRowBackground(Color.glassPanel)
+
+                    Section("Daily Briefing") {
+                        Toggle("Daily follow-up digest", isOn: Binding(
+                            get: { notifications.dailyDigestEnabled },
+                            set: { notifications.setDailyDigestEnabled($0) }
+                        ))
+                        if notifications.dailyDigestEnabled {
+                            DatePicker(
+                                "Notification time",
+                                selection: Binding(
+                                    get: { notifications.dailyDigestTimeDate },
+                                    set: { notifications.setDailyDigestTime($0) }
+                                ),
+                                displayedComponents: .hourAndMinute
+                            )
+                            Button {
+                                Task { await notifications.sendDailyDigestPreview() }
+                            } label: {
+                                Label("Preview Today's Digest", systemImage: "sparkles")
+                            }
+                        }
+                        Text("Summarizes overdue contacts, contacts missing a follow-up plan, due-today follow-ups, and today's appointments.")
+                            .font(.caption)
+                            .foregroundStyle(Color.textSecondary)
+                    }.listRowBackground(Color.glassPanel)
+
+                    if let notice = notifications.statusNotice, !notice.isEmpty {
+                        Section {
+                            Text(notice)
+                                .font(.footnote)
+                                .foregroundStyle(Color.neonCyan)
+                        }.listRowBackground(Color.glassPanel)
+                    }
+
+                    Section("Scheduled Reminder Alerts (\(notifications.persistedAlarms.count))") {
+                        if notifications.persistedAlarms.isEmpty {
+                            Text("No upcoming reminder alerts scheduled.")
+                                .foregroundStyle(Color.textSecondary)
+                        } else {
+                            ForEach(notifications.persistedAlarms.prefix(15)) { alarm in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(alarm.notificationTitle)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(Color.textPrimary)
+                                        Spacer()
+                                        Text(Date(timeIntervalSince1970: Double(alarm.dueTime) / 1000).formatted(date: .abbreviated, time: .shortened))
+                                            .font(.caption)
+                                            .foregroundStyle(Color.neonCyan)
+                                    }
+                                    Text(alarm.notificationBody)
+                                        .font(.caption)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    }.listRowBackground(Color.glassPanel)
+                }
+                .scrollContentBackground(.hidden)
+            }
+            .navigationTitle("Notifications")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onAppear {
+                Task { await notifications.refreshAuthorizationStatus() }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(.neonCyan)
     }
 }

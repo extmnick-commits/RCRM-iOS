@@ -3,24 +3,26 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AA1234567890123456789001 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA1234567890123456789002 /* GoogleService-Info.plist */; };
 		12D146CA295DF58D8305246C /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F31C804D2CF1B4208B12B8 /* RootView.swift */; };
 		61B136A054FB8973103F3DCA /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = E47EE692107085E7BBBBBF81 /* FirebaseAuth */; };
 		747835277872FE0D67B9B78E /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FB3A9965C6EF7348861576EE /* FirebaseCore */; };
 		A87BFF1A58BA07A9951D6D15 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 7A6DA715D080C669E3F43D97 /* FirebaseFirestore */; };
+		AA1234567890123456789001 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA1234567890123456789002 /* GoogleService-Info.plist */; };
+		C4A1E0DA4000000000000002 /* GoogleCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A1E0DA4000000000000001 /* GoogleCalendar.swift */; };
 		EA943370F46A2AF7D43049FF /* RCRMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */; };
 		EEEB8F0EB757E3256250D7C4 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B305E9DC0192B6E9F88D9D3C /* Foundation.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		AA1234567890123456789002 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RCRMApp.swift; sourceTree = "<group>"; };
+		C4A1E0DA4000000000000001 /* GoogleCalendar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleCalendar.swift; sourceTree = "<group>"; };
 		3906608B5EE7C6F84EAEE581 /* RCRM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RCRM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		45F31C804D2CF1B4208B12B8 /* RootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		AA1234567890123456789002 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		B305E9DC0192B6E9F88D9D3C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
 
@@ -76,10 +78,10 @@
 			isa = PBXGroup;
 			children = (
 				111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */,
+				C4A1E0DA4000000000000001 /* GoogleCalendar.swift */,
 				45F31C804D2CF1B4208B12B8 /* RootView.swift */,
 				AA1234567890123456789002 /* GoogleService-Info.plist */,
 			);
-			name = RCRM;
 			path = RCRM;
 			sourceTree = "<group>";
 		};
@@ -114,8 +116,9 @@
 		DB77C2D4F7250A0C7E916C92 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
+				BuildIndependentTargetsInParallel = YES;
 				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 2710;
 			};
 			buildConfigurationList = 0C2CAA5F374B1A664414B36E /* Build configuration list for PBXProject "RCRM" */;
 			compatibilityVersion = "Xcode 3.2";
@@ -126,11 +129,9 @@
 				Base,
 			);
 			mainGroup = 35739C2E6CC356692D816578;
-			minimizedProjectReferenceProxies = 0;
 			packageReferences = (
 				97A8690DA0F8B96CB72D585F /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
-			preferredProjectObjectVersion = 100;
 			productRefGroup = 93A995D30D0872697CE70036 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -157,6 +158,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EA943370F46A2AF7D43049FF /* RCRMApp.swift in Sources */,
+				C4A1E0DA4000000000000002 /* GoogleCalendar.swift in Sources */,
 				12D146CA295DF58D8305246C /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -198,9 +200,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 2CJBGBUTH3;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -219,6 +224,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -232,9 +238,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RCRM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RCRM;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.nickpulido.rcrm;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -276,9 +286,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 2CJBGBUTH3;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -290,6 +303,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
@@ -303,9 +317,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RCRM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RCRM;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.nickpulido.rcrm;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;

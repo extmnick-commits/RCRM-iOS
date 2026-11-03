@@ -227,4 +227,117 @@ check(NoteUtils.sortedNotes("   \n  ").isEmpty, "sortedNotes ignores blank input
 check(NoteUtils.canApplyEditedNotes(remoteNotes: sortedNotesSample, expectedOriginalNotes: sortedNotesSample), "canApplyEditedNotes allows unchanged remote base")
 check(!NoteUtils.canApplyEditedNotes(remoteNotes: sortedNotesSample + "\n\nOther", expectedOriginalNotes: sortedNotesSample), "canApplyEditedNotes blocks stale overwrite")
 
-print("Passed \(assertions) Step 2 & Step 3 compatibility checks.")
+let description = AppointmentAgenda.crmDescription(leadName: "Alex", phone: "555", location: "Cafe", leadId: "lead-1", appointmentId: "appt-1", notes: "Bring notes")
+check(description.contains("rcrm://lead/lead-1") && description.contains("rcrm://appointment/appt-1") && description.contains("Phone: 555"), "crmDescription matches Android links")
+check(AppointmentAgenda.extractLeadId(description) == "lead-1", "extractLeadId reads rcrm lead link")
+check(AppointmentAgenda.extractAppointmentId(description + ".") == "appt-1", "extractAppointmentId trims trailing punctuation")
+let mergedNotes = AppointmentAgenda.mergeDescription(existing: description, leadName: "Alex", phone: nil, location: nil, leadId: "lead-1", appointmentId: "appt-1", notes: "Bring notes")
+check(mergedNotes.components(separatedBy: "rcrm://lead/lead-1").count == 2, "mergeDescription does not duplicate the lead link")
+check(AppointmentAgenda.leadId(from: URL(string: "rcrm://lead/lead-1")!) == "lead-1", "leadId reads calendar deep link")
+check(AppointmentAgenda.matchEventToLeadName("Lunch with Alex Rivera", names: ["Al", "Alex Rivera", "Alex"]) == "Alex Rivera", "matchEventToLeadName prefers the longest whole name")
+check(AppointmentAgenda.matchEventToLeadName("Alexander", names: ["Alex"]) == nil, "matchEventToLeadName requires a name boundary")
+check(AppointmentAgenda.eventIdentityAllows(eventLeadId: "lead-1", eventAppointmentId: "appt-1", expectedLeadId: "lead-1", expectedAppointmentId: "appt-1", soleAppointmentForLead: false), "eventIdentityAllows matching appointment link")
+check(!AppointmentAgenda.eventIdentityAllows(eventLeadId: "lead-1", eventAppointmentId: "appt-1", expectedLeadId: "lead-1", expectedAppointmentId: "other", soleAppointmentForLead: true), "eventIdentityAllows rejects a different appointment")
+check(!AppointmentAgenda.eventIdentityAllows(eventLeadId: "lead-1", eventAppointmentId: nil, expectedLeadId: "lead-1", expectedAppointmentId: "appt-1", soleAppointmentForLead: false, recurringMaster: true), "eventIdentityAllows refuses a recurring series")
+
+let crm = AppointmentAgenda.AgendaItem(leadId: "lead-1", appointmentId: "appt-1", leadName: "Alex", title: "Appointment: Alex", startMillis: millis(2026, 10, 26, 13, 0), location: "Cafe")
+let linked = AppointmentAgenda.CalendarEventRef(eventKey: "g-1", title: "Appointment: Alex", startMillis: millis(2026, 10, 26, 13, 0), endMillis: millis(2026, 10, 26, 14, 0), allDay: false, calendarId: "cal", calendarDisplayName: "Google", accountName: "Google", canWrite: true, recurring: false, originalInstanceTime: nil, explicitLeadId: "lead-1", explicitAppointmentId: "appt-1", canceled: false, location: "Cafe", notes: description, colorHex: 0x4C8DFF)
+let external = AppointmentAgenda.CalendarEventRef(eventKey: "g-2", title: "Dentist", startMillis: millis(2026, 10, 26, 15, 0), endMillis: millis(2026, 10, 26, 16, 0), allDay: false, calendarId: "cal", calendarDisplayName: "Google", accountName: "Google", canWrite: true, recurring: false, originalInstanceTime: nil, explicitLeadId: nil, explicitAppointmentId: nil, canceled: false, location: nil, notes: "", colorHex: 0x33AA55)
+let agenda = AppointmentAgenda.matchAgenda(appointments: [crm], events: [linked, external], suggestedLeadIdsByEventKey: ["g-2": "lead-9"], localEventKeysByAppointmentId: [:])
+check(agenda.count == 2 && agenda[0].appointmentId == "appt-1" && agenda[0].calendarEventKey == "g-1" && agenda[1].explicitCrm == false && agenda[1].suggestedLeadId == "lead-9", "matchAgenda pairs the RCRM appointment and keeps the other calendar event")
+check(AppointmentAgenda.selectRetryTarget(candidates: [linked], appointmentId: "appt-1", leadId: "lead-1", preferredEventKey: nil) == "g-1", "selectRetryTarget finds the linked Google event")
+let duplicateHoliday = AppointmentAgenda.UserCalendar(id: "ro", displayName: "Holidays", accountName: "Other", canWrite: false, isPrimary: false, colorHex: 1)
+let primaryHoliday = AppointmentAgenda.UserCalendar(id: "rw", displayName: "Holidays", accountName: "Google", canWrite: true, isPrimary: true, colorHex: 1)
+check(AppointmentAgenda.redundantReadOnlyCalendarIds([duplicateHoliday, primaryHoliday]) == ["ro"], "redundantReadOnlyCalendarIds hides the extra holiday calendar")
+check(AppointmentAgenda.emptyMessage(monthWindow: .upcoming, source: .all, daySelected: false).contains("Nothing upcoming"), "emptyMessage covers the combined calendar")
+
+// Step 4: ReminderNotificationPlanner & Daily Digest checks
+check(ReminderNotificationPlanner.sanitizeId("  lead/12\\3  ") == "lead_12_3", "sanitizeId replaces slashes and trims")
+check(ReminderNotificationPlanner.sanitizeId("   ") == "reminder", "sanitizeId blank fallback")
+check(ReminderNotificationPlanner.reminderRequestIdentity(leadId: "lead/1", actionId: "act\\2") == "reminder:lead_1:act_2", "reminderRequestIdentity matches Android format")
+check(ReminderNotificationPlanner.legacyActionId(leadId: "lead/1") == "legacy_followup_lead_1", "legacyActionId matches Android format")
+check(ReminderNotificationPlanner.isAppointmentAlarmKey("appt:123") && ReminderNotificationPlanner.isAppointmentAlarmKey("appt_123") && !ReminderNotificationPlanner.isAppointmentAlarmKey("call_123"), "isAppointmentAlarmKey detects appointment keys")
+
+let alarmNow = millis(2026, 10, 26, 12, 0)
+check(ReminderNotificationPlanner.shouldRestoreAlarm(dueTime: alarmNow - 5 * 3_600_000, nowMillis: alarmNow), "shouldRestoreAlarm keeps alarms within 6h grace window")
+check(!ReminderNotificationPlanner.shouldRestoreAlarm(dueTime: alarmNow - 7 * 3_600_000, nowMillis: alarmNow), "shouldRestoreAlarm drops alarms older than 6h grace window")
+
+let openDueSoon = NextAction(id: "a-1", leadId: "lead-1", ownerId: "owner", type: .call, title: "  Call Alex  ", dueTime: alarmNow + 3_600_000, status: .pending)
+let openDueLater = NextAction(id: "a-2", leadId: "lead-1", ownerId: "owner", type: .email, title: "", dueTime: alarmNow + 7_200_000, status: .pending)
+let completedAct = NextAction(id: "a-3", leadId: "lead-1", ownerId: "owner", type: .toDo, title: "Done", dueTime: alarmNow + 1_800_000, status: .completed)
+let initialSync = ReminderNotificationPlanner.syncAlarms(
+    leadId: "lead-1",
+    contactName: "  Alex Rivera ",
+    persisted: [],
+    actions: [openDueSoon, openDueLater, completedAct],
+    nowMillis: alarmNow
+)
+check(initialSync.schedule.count == 2 && initialSync.schedule[0].title == "Call Alex" && initialSync.schedule[1].title == "Reminder" && initialSync.schedule[0].contactName == "Alex Rivera", "syncAlarms schedules only pending actions and normalizes blank title/name")
+check(initialSync.cancelActionIds.contains("legacy_followup_lead-1"), "syncAlarms cancels legacy fallback when syncing next_actions")
+
+// Rescheduling replaces existing alarm and preserves unchanged ones
+var rescheduledOpen = openDueSoon
+rescheduledOpen.dueTime = alarmNow + 10_800_000
+let rescheduleSync = ReminderNotificationPlanner.syncAlarms(
+    leadId: "lead-1",
+    contactName: "Alex Rivera",
+    persisted: initialSync.schedule,
+    actions: [rescheduledOpen, openDueLater],
+    nowMillis: alarmNow
+)
+check(rescheduleSync.cancelActionIds == ["a-1", "legacy_followup_lead-1"] && rescheduleSync.schedule.count == 1 && rescheduleSync.schedule[0].actionId == "a-1" && rescheduleSync.schedule[0].dueTime == rescheduledOpen.dueTime, "Rescheduling cancels only the changed action and reschedules it")
+
+// Pausing or closing a contact cancels all persisted alarms for that lead
+let pausedSync = ReminderNotificationPlanner.syncAlarms(
+    leadId: "lead-1",
+    contactName: "Alex Rivera",
+    isPaused: true,
+    persisted: initialSync.schedule,
+    actions: [rescheduledOpen, openDueLater],
+    nowMillis: alarmNow
+)
+check(pausedSync.schedule.isEmpty && pausedSync.cancelActionIds.contains("a-1") && pausedSync.cancelActionIds.contains("a-2"), "Pausing a contact cancels all persisted reminder alarms")
+
+// Reconciling lead summaries creates fallback follow-up and appointment alarms for unsynced leads and drops deleted/closed leads
+let summaryUnsynced = LeadNotificationSummary(
+    id: "lead-unsynced",
+    name: "Sam Carter",
+    followUpMillis: alarmNow + 3_600_000,
+    isPaused: false,
+    isClosed: false,
+    appointments: [AppointmentRecord(id: "appt-99", startMillis: alarmNow + 7_200_000, location: "Zoom", status: .scheduled, updatedAtMillis: alarmNow)]
+)
+let summaryClosed = LeadNotificationSummary(id: "lead-1", name: "Alex Rivera", followUpMillis: alarmNow + 3_600_000, isPaused: false, isClosed: true)
+let reconciled = ReminderNotificationPlanner.reconcileLeadSummaries(
+    leads: [summaryUnsynced, summaryClosed],
+    persisted: initialSync.schedule,
+    syncedLeadIds: [],
+    nowMillis: alarmNow
+)
+check(reconciled.cancelRequestIds.contains("reminder:lead-1:a-1") && reconciled.cancelRequestIds.contains("reminder:lead-1:a-2"), "reconcileLeadSummaries cancels alarms for closed leads")
+check(reconciled.kept.contains(where: { $0.leadId == "lead-unsynced" && $0.actionId == "appt_appt-99" }), "reconcileLeadSummaries schedules appointment reminder for unsynced active lead")
+
+// Daily digest matches Android DailyFollowUpWorker rules
+let digestNow = millis(2026, 10, 26, 8, 0)
+let digestLeads = [
+    LeadNotificationSummary(id: "l1", name: "Overdue Lead", followUpMillis: millis(2026, 10, 25, 17, 0)),
+    LeadNotificationSummary(id: "l2", name: "Today Lead", followUpMillis: millis(2026, 10, 26, 14, 30)),
+    LeadNotificationSummary(id: "l3", name: "Missing Plan Lead", followUpMillis: nil),
+    LeadNotificationSummary(id: "l4", name: "Paused Lead", followUpMillis: nil, isPaused: true),
+    LeadNotificationSummary(id: "l5", name: "Closed Lead", followUpMillis: millis(2026, 10, 26, 10, 0), isClosed: true),
+    LeadNotificationSummary(id: "l6", name: "Appt Lead", followUpMillis: millis(2026, 10, 28, 10, 0), appointments: [
+        AppointmentRecord(id: "ap1", startMillis: millis(2026, 10, 26, 11, 0), status: .scheduled),
+        AppointmentRecord(id: "ap2", startMillis: millis(2026, 10, 26, 15, 0), status: .canceled)
+    ])
+]
+let digest = ReminderNotificationPlanner.buildDailyDigest(leads: digestLeads, nowMillis: digestNow, calendar: calendar)
+check(digest != nil && digest?.totalCount == 4, "buildDailyDigest counts overdue, today, missing plan, and today's scheduled appointments while excluding paused/closed/canceled")
+check(digest?.title == "Today's schedule (4)" && digest?.summaryText == "3 follow-up(s) and 1 appointment(s) today", "buildDailyDigest formats title and summary matching Android")
+check(digest?.followUps == ["Overdue Lead · Overdue", "Today Lead · 2:30 PM", "Missing Plan Lead · Missing Plan"], "buildDailyDigest formats follow-up lines")
+check(digest?.appointments == ["Appt Lead · 11:00 AM"], "buildDailyDigest formats appointment lines")
+
+// Deep link extraction from notification userInfo
+check(ReminderNotificationPlanner.extractLeadId(fromUserInfo: ["targetLeadId": "lead-42"]) == "lead-42", "extractLeadId reads Android targetLeadId key")
+check(ReminderNotificationPlanner.extractLeadId(fromUserInfo: ["rcrmUrl": "rcrm://lead/lead-99"]) == "lead-99", "extractLeadId parses rcrmUrl deep link")
+
+print("Passed \(assertions) Step 2, Step 3 & Step 4 compatibility checks.")
