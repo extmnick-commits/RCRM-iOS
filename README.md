@@ -20,7 +20,9 @@ Log Outcome is available on feed rows and contact details. It atomically writes 
 
 Contact details listen to `next_actions` and `activity_records`, merging records with legacy notes and removing duplicate event IDs. Child dates and contact-attempt dates are epoch-millisecond integers; parent `followUpDate` is a Firestore timestamp, removed when no pending date remains or the workflow is paused/closed. Writes preserve unrelated Android fields and include authenticated ownership metadata.
 
-Appointments can sync with the calendars on this iPhone, including a Google account added in Settings. New and rescheduled appointments are written there with the same `rcrm://lead/` and `rcrm://appointment/` links Android uses, and calendar events show on the Appointments tab. Local notification delivery alerts for open reminders and appointments, schedules a configurable Daily Briefing digest, and deep-links notification taps directly to the contact. Automatic post-call Smart Log, device contact synchronization, and AI are outside this step.
+Appointments can sync with the calendars on this iPhone, including a Google account added in Settings. New and rescheduled appointments are written there with the same `rcrm://lead/` and `rcrm://appointment/` links Android uses, and calendar events show on the Appointments tab. Local notification delivery alerts for open reminders and appointments, schedules a configurable Daily Briefing digest, and deep-links notification taps directly to the contact.
+
+Device contact synchronization and rapid lead entry are supported via Apple Contacts (`Contacts` / `ContactsUI`) and Quick Smart Log. Contacts can be imported with phone numbers, emails, addresses, and company details directly into RCRM leads, with normalized phone matching to avoid duplicates. Quick Smart Log provides fast follow-up scheduling shortcuts (7 PM Today, 7 PM Tomorrow, +1 Week, +2 Weeks, +1 Month, Custom), action type selection, outcome note capture, and automated Intro SMS drafting with one-tap handoff to Messages. CallKit live call observing and AI are outside this step.
 
 ## Verification
 

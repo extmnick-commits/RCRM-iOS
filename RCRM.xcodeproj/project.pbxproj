@@ -12,7 +12,10 @@
 		747835277872FE0D67B9B78E /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FB3A9965C6EF7348861576EE /* FirebaseCore */; };
 		A87BFF1A58BA07A9951D6D15 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 7A6DA715D080C669E3F43D97 /* FirebaseFirestore */; };
 		AA1234567890123456789001 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA1234567890123456789002 /* GoogleService-Info.plist */; };
+		AA1234567890123456789003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA1234567890123456789004 /* Assets.xcassets */; };
 		C4A1E0DA4000000000000002 /* GoogleCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A1E0DA4000000000000001 /* GoogleCalendar.swift */; };
+		C5A1E0DA5000000000000002 /* ContactSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A1E0DA5000000000000001 /* ContactSyncService.swift */; };
+		C6A1E0DA6000000000000002 /* SmartLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A1E0DA6000000000000001 /* SmartLogView.swift */; };
 		EA943370F46A2AF7D43049FF /* RCRMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */; };
 		EEEB8F0EB757E3256250D7C4 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B305E9DC0192B6E9F88D9D3C /* Foundation.framework */; };
 /* End PBXBuildFile section */
@@ -20,9 +23,12 @@
 /* Begin PBXFileReference section */
 		111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RCRMApp.swift; sourceTree = "<group>"; };
 		C4A1E0DA4000000000000001 /* GoogleCalendar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleCalendar.swift; sourceTree = "<group>"; };
+		C5A1E0DA5000000000000001 /* ContactSyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactSyncService.swift; sourceTree = "<group>"; };
+		C6A1E0DA6000000000000001 /* SmartLogView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SmartLogView.swift; sourceTree = "<group>"; };
 		3906608B5EE7C6F84EAEE581 /* RCRM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RCRM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		45F31C804D2CF1B4208B12B8 /* RootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		AA1234567890123456789002 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		AA1234567890123456789004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B305E9DC0192B6E9F88D9D3C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
 
@@ -79,7 +85,10 @@
 			children = (
 				111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */,
 				C4A1E0DA4000000000000001 /* GoogleCalendar.swift */,
+				C5A1E0DA5000000000000001 /* ContactSyncService.swift */,
+				C6A1E0DA6000000000000001 /* SmartLogView.swift */,
 				45F31C804D2CF1B4208B12B8 /* RootView.swift */,
+				AA1234567890123456789004 /* Assets.xcassets */,
 				AA1234567890123456789002 /* GoogleService-Info.plist */,
 			);
 			path = RCRM;
@@ -146,6 +155,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA1234567890123456789003 /* Assets.xcassets in Resources */,
 				AA1234567890123456789001 /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -159,6 +169,8 @@
 			files = (
 				EA943370F46A2AF7D43049FF /* RCRMApp.swift in Sources */,
 				C4A1E0DA4000000000000002 /* GoogleCalendar.swift in Sources */,
+				C5A1E0DA5000000000000002 /* ContactSyncService.swift in Sources */,
+				C6A1E0DA6000000000000002 /* SmartLogView.swift in Sources */,
 				12D146CA295DF58D8305246C /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

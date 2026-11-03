@@ -340,4 +340,22 @@ check(digest?.appointments == ["Appt Lead · 11:00 AM"], "buildDailyDigest forma
 check(ReminderNotificationPlanner.extractLeadId(fromUserInfo: ["targetLeadId": "lead-42"]) == "lead-42", "extractLeadId reads Android targetLeadId key")
 check(ReminderNotificationPlanner.extractLeadId(fromUserInfo: ["rcrmUrl": "rcrm://lead/lead-99"]) == "lead-99", "extractLeadId parses rcrmUrl deep link")
 
-print("Passed \(assertions) Step 2, Step 3 & Step 4 compatibility checks.")
+// Step 5: SmartLogPlanner & Phone Normalization checks
+check(SmartLogPlanner.normalizedPhone("1 (555) 234-5678") == "5552345678", "normalizedPhone removes non-digits and leading 1")
+check(SmartLogPlanner.normalizedPhone("555-234-5678") == "5552345678", "normalizedPhone leaves 10 digits clean")
+check(SmartLogPlanner.phonesMatch("+1 555-234-5678", "(555) 234.5678"), "phonesMatch matches formatted numbers")
+check(!SmartLogPlanner.phonesMatch("555-234-5678", "555-999-5678"), "phonesMatch rejects different numbers")
+check(SmartLogPlanner.formatFirstName(from: "Alex Rivera") == "Alex", "formatFirstName extracts first name")
+check(SmartLogPlanner.formatFirstName(from: "  ") == "", "formatFirstName handles empty")
+check(SmartLogPlanner.renderIntroSms(template: "Hey [NAME]!", contactName: "Alex Rivera") == "Hey Alex!", "renderIntroSms replaces token")
+check(SmartLogPlanner.renderIntroSms(template: nil, contactName: "Jordan").contains("Hi Jordan,"), "renderIntroSms default template")
+check(SmartLogPlanner.profileUpdates(draft: ["name": "  Alex  ", "email": "   ", "phone": "123"]).count == 2, "profileUpdates filters blank entries")
+
+let presetToday = SmartLogPlanner.presetFollowUpDate(preset: .todayPreset, now: date(2026, 10, 26, 10, 0), presetHour: 19, presetMinute: 0, calendar: calendar)
+check(presetToday == date(2026, 10, 26, 19, 0), "presetFollowUpDate today 7pm")
+let presetTomorrow = SmartLogPlanner.presetFollowUpDate(preset: .tomorrowPreset, now: date(2026, 10, 26, 10, 0), presetHour: 19, presetMinute: 0, calendar: calendar)
+check(presetTomorrow == date(2026, 10, 27, 19, 0), "presetFollowUpDate tomorrow 7pm")
+let presetWeek = SmartLogPlanner.presetFollowUpDate(preset: .plus1Week, now: date(2026, 10, 26, 10, 0), presetHour: 19, presetMinute: 0, calendar: calendar)
+check(presetWeek == date(2026, 11, 2, 19, 0), "presetFollowUpDate +1 week 7pm")
+
+print("Passed \(assertions) Step 2, Step 3, Step 4 & Step 5 compatibility checks.")

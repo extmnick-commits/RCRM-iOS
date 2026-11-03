@@ -119,7 +119,11 @@ struct RootView: View {
             else { SignInView() }
         }.preferredColorScheme(.dark).tint(.neonCyan)
             .onOpenURL { url in
-                if let leadID = AppointmentAgenda.leadId(from: url) {
+                if url.host?.lowercased() == "smart-log" {
+                    session.pendingSmartLog = true
+                    session.pendingSmartLogImport = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                        .queryItems?.contains { $0.name == "import" && ($0.value == nil || $0.value == "1") } == true
+                } else if let leadID = AppointmentAgenda.leadId(from: url) {
                     session.pendingLeadID = leadID
                 }
             }
@@ -190,6 +194,13 @@ struct AppShell: View {
                 if let leadID = session.pendingLeadID {
                     NavigationStack { LeadDetailView(leadID: leadID, userID: userID) }
                 }
+            }
+            .fullScreenCover(isPresented: Binding(get: { session.pendingSmartLog }, set: { if !$0 { session.pendingSmartLog = false; session.pendingSmartLogImport = false } })) {
+                SmartLogView(userID: userID, openContactPickerOnAppear: session.pendingSmartLogImport) {
+                    session.pendingSmartLog = false
+                    session.pendingSmartLogImport = false
+                }
+                .environmentObject(store)
             }
             .onAppear {
                 store.start(userID: userID)
@@ -443,6 +454,7 @@ struct HomeView: View {
     @State private var outcomeContext: AppointmentOutcomeContext?
     @State private var showingCalendarSettings = false
     @State private var showingNotificationSettings = false
+    @State private var showingSmartLog = false
     @State private var nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
 
     private var upcomingItems: [AppointmentAgenda.AgendaItem] {
@@ -481,7 +493,10 @@ struct HomeView: View {
         }
         VStack(alignment: .leading, spacing: 20) {
             HStack { metric("Contacts", store.leads.count, .neonCyan); metric("Overdue", store.leads.filter { !$0.isPaused && !$0.isClosed && ($0.followUpDate.map { dueGroup($0) == 0 } ?? false) }.count, .neonPink); metric("Today", store.leads.filter { !$0.isPaused && !$0.isClosed && ($0.followUpDate.map { dueGroup($0) == 1 } ?? false) }.count, .neonGreen) }
-            Button { showingAdd = true } label: { Label("Quick add lead", systemImage: "plus").bold().frame(maxWidth: .infinity).padding() }.background(Color.neonCyan, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(.black)
+            HStack(spacing: 12) {
+                Button { showingSmartLog = true } label: { Label("Smart Log", systemImage: "sparkles").bold().frame(maxWidth: .infinity).padding() }.background(Color.neonGreen, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(.black)
+                Button { showingAdd = true } label: { Label("Add lead", systemImage: "plus").bold().frame(maxWidth: .infinity).padding() }.background(Color.neonCyan, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(.black)
+            }
         }.padding(20).frostedGlass()
         FollowUpTabs(group: $group)
         if store.isLoading { ProgressView("Loading contacts…") }
@@ -509,6 +524,10 @@ struct HomeView: View {
         }
         .sheet(isPresented: $showingNotificationSettings) {
             NotificationSettingsSheet(notifications: notifications)
+        }
+        .fullScreenCover(isPresented: $showingSmartLog) {
+            SmartLogView(userID: userID)
+                .environmentObject(store)
         }
         .sheet(item: $outcomeContext) { ctx in
             OutcomeSheetView(lead: ctx.lead, userID: userID, appointmentID: ctx.appointmentID)
@@ -1170,6 +1189,7 @@ struct ContactsView: View {
     @State private var search = ""
     @State private var category = "All"
     @State private var showingAdd = false
+    @State private var smartLogPresentation: SmartLogPresentation?
     @State private var toDelete: Lead?
     var filtered: [Lead] { store.leads.filter { lead in
         (category == "All" || lead.categories.contains { $0.caseInsensitiveCompare(category) == .orderedSame }) && (search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || [lead.name, lead.phone, lead.email, lead.company, lead.notes, lead.category].contains { $0.localizedCaseInsensitiveContains(search) })
@@ -1179,9 +1199,46 @@ struct ContactsView: View {
         if store.isLoading && store.leads.isEmpty { Spacer(); ProgressView("Loading contacts…"); Spacer() }
         else if filtered.isEmpty { Spacer(); ContentUnavailableView("No contacts found", systemImage: "person.crop.circle.badge.questionmark", description: Text("Add a contact or adjust your search.")); Spacer() }
         else { List(filtered) { lead in NavigationLink { LeadDetailView(leadID: lead.id, userID: userID) } label: { ContactRow(lead: lead) }.listRowBackground(Color.glassPanel).swipeActions { Button(role: .destructive) { toDelete = lead } label: { Label("Delete", systemImage: "trash") } } }.scrollContentBackground(.hidden) }
-    } }.navigationTitle("Contacts").searchable(text: $search, prompt: "Search contacts").toolbar { ToolbarItem(placement: .topBarTrailing) { Button { showingAdd = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add contact") } }
-        .sheet(isPresented: $showingAdd) { LeadFormSheet(userID: userID) }
-        .confirmationDialog("Delete this contact?", isPresented: Binding(get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }), titleVisibility: .visible) { Button("Delete", role: .destructive) { if let lead = toDelete { Task { do { try await store.deleteLead(lead, userID: userID) } catch { store.error = error.localizedDescription } } }; toDelete = nil } } message: { Text("This removes the contact. Its related activity and actions are not automatically deleted.") }
+    } }.navigationTitle("Contacts").searchable(text: $search, prompt: "Search contacts")
+    .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+            HStack(spacing: 14) {
+                Button {
+                    smartLogPresentation = SmartLogPresentation(openContactPickerOnAppear: true)
+                } label: {
+                    Image(systemName: "person.crop.circle.badge.plus")
+                }
+                .accessibilityLabel("Import from Apple Contacts")
+
+                Button {
+                    smartLogPresentation = SmartLogPresentation()
+                } label: {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(Color.neonGreen)
+                }
+                .accessibilityLabel("Quick Smart Log")
+
+                Button {
+                    showingAdd = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add contact")
+            }
+        }
+    }
+    .sheet(isPresented: $showingAdd) { LeadFormSheet(userID: userID) }
+    .fullScreenCover(item: $smartLogPresentation) { presentation in
+        SmartLogView(
+            userID: userID,
+            initialContact: presentation.initialContact,
+            openContactPickerOnAppear: presentation.openContactPickerOnAppear
+        ) {
+            smartLogPresentation = nil
+        }
+        .environmentObject(store)
+    }
+    .confirmationDialog("Delete this contact?", isPresented: Binding(get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }), titleVisibility: .visible) { Button("Delete", role: .destructive) { if let lead = toDelete { Task { do { try await store.deleteLead(lead, userID: userID) } catch { store.error = error.localizedDescription } } }; toDelete = nil } } message: { Text("This removes the contact. Its related activity and actions are not automatically deleted.") }
     }
 }
 struct FollowUpsView: View {

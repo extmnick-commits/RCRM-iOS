@@ -6,6 +6,8 @@
 	<string>RCRM adds your appointments to calendars on this iPhone, including Google Calendar, and shows those events next to your contacts.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>RCRM adds your appointments to calendars on this iPhone, including Google Calendar, and shows those events next to your contacts.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>RCRM accesses your contacts to let you import leads and match phone numbers.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

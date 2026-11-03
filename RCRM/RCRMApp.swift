@@ -40,6 +40,8 @@ final class SessionStore: ObservableObject {
     @Published var error: String?
     @Published var isLoading = false
     @Published var pendingLeadID: String?
+    @Published var pendingSmartLog = false
+    @Published var pendingSmartLogImport = false
     private var authListener: AuthStateDidChangeListenerHandle?
     var isConfigured: Bool { FirebaseApp.app() != nil }
 
@@ -2257,6 +2259,123 @@ enum ReminderNotificationPlanner {
     }
 }
 
+enum SmartLogPlanner {
+    static let nameToken = "[NAME]"
+    static let defaultIntroTemplate = "Hi [NAME], just following up to see if you had any questions! Looking forward to connecting again."
+
+    static func normalizedPhone(_ phone: String) -> String {
+        let digits = phone.filter { $0.isNumber }
+        if digits.count == 11 && digits.hasPrefix("1") {
+            return String(digits.dropFirst())
+        }
+        return digits
+    }
+
+    static func phonesMatch(_ first: String, _ second: String) -> Bool {
+        let n1 = normalizedPhone(first)
+        let n2 = normalizedPhone(second)
+        return !n1.isEmpty && n1 == n2
+    }
+
+    static func formatFirstName(from fullName: String) -> String {
+        let trimmed = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return trimmed.components(separatedBy: .whitespacesAndNewlines).first ?? trimmed
+    }
+
+    static func renderIntroSms(template: String?, contactName: String) -> String {
+        let base = (template?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? (template ?? defaultIntroTemplate)
+            : defaultIntroTemplate
+        let firstName = formatFirstName(from: contactName)
+        let replacement = firstName.isEmpty ? "there" : firstName
+        return base.replacingOccurrences(of: nameToken, with: replacement)
+    }
+
+    /** Optional fields left empty in a quick log never erase the full contact profile. */
+    static func profileUpdates(draft: [String: String]) -> [String: Any] {
+        var updates: [String: Any] = [:]
+        for (key, value) in draft {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                updates[key] = trimmed
+            }
+        }
+        return updates
+    }
+
+    enum SmartPreset: String, CaseIterable, Identifiable {
+        case todayPreset = "today_preset"
+        case tomorrowPreset = "tomorrow_preset"
+        case plus1Week = "plus_1_week"
+        case plus2Weeks = "plus_2_weeks"
+        case plus1Month = "plus_1_month"
+
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .todayPreset: return "7 PM Today"
+            case .tomorrowPreset: return "7 PM Tomorrow"
+            case .plus1Week: return "+1 Week"
+            case .plus2Weeks: return "+2 Weeks"
+            case .plus1Month: return "+1 Month"
+            }
+        }
+    }
+
+    static func presetFollowUpDate(
+        preset: SmartPreset,
+        now: Date = Date(),
+        presetHour: Int = 19,
+        presetMinute: Int = 0,
+        calendar: Calendar = .current
+    ) -> Date {
+        switch preset {
+        case .todayPreset:
+            var comps = calendar.dateComponents([.year, .month, .day], from: now)
+            comps.hour = presetHour
+            comps.minute = presetMinute
+            comps.second = 0
+            if let target = calendar.date(from: comps) {
+                if target > now {
+                    return target
+                } else {
+                    return calendar.date(byAdding: .day, value: 1, to: target) ?? target
+                }
+            }
+            return now
+        case .tomorrowPreset:
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
+            var comps = calendar.dateComponents([.year, .month, .day], from: tomorrow)
+            comps.hour = presetHour
+            comps.minute = presetMinute
+            comps.second = 0
+            return calendar.date(from: comps) ?? tomorrow
+        case .plus1Week:
+            let week = calendar.date(byAdding: .day, value: 7, to: now) ?? now
+            var comps = calendar.dateComponents([.year, .month, .day], from: week)
+            comps.hour = presetHour
+            comps.minute = presetMinute
+            comps.second = 0
+            return calendar.date(from: comps) ?? week
+        case .plus2Weeks:
+            let twoWeeks = calendar.date(byAdding: .day, value: 14, to: now) ?? now
+            var comps = calendar.dateComponents([.year, .month, .day], from: twoWeeks)
+            comps.hour = presetHour
+            comps.minute = presetMinute
+            comps.second = 0
+            return calendar.date(from: comps) ?? twoWeeks
+        case .plus1Month:
+            let month = calendar.date(byAdding: .month, value: 1, to: now) ?? now
+            var comps = calendar.dateComponents([.year, .month, .day], from: month)
+            comps.hour = presetHour
+            comps.minute = presetMinute
+            comps.second = 0
+            return calendar.date(from: comps) ?? month
+        }
+    }
+}
+
 struct Lead: Identifiable {
     var id = ""
     var ownerId = ""
@@ -2576,9 +2695,13 @@ final class LeadActivityStore: ObservableObject {
                 guard let self, self.generation == token, Auth.auth().currentUser?.uid == userID else { return }
                 self.actionsLoading = false; self.actionsError = error?.localizedDescription
                 if let snapshot {
-                    let loaded = snapshot.documents.map { NextAction(document: $0, leadID: leadID) }.sorted { $0.dueTime == $1.dueTime ? $0.id < $1.id : $0.dueTime < $1.dueTime }
-                    self.actions = loaded
-                    ReminderNotificationService.shared.syncActionsIfKnownLead(leadID: leadID, actions: loaded)
+                    let loaded = snapshot.documents.map { NextAction(document: $0, leadID: leadID) }
+                    let sorted = loaded.sorted { lhs, rhs in
+                        if lhs.dueTime == rhs.dueTime { return lhs.id < rhs.id }
+                        return lhs.dueTime < rhs.dueTime
+                    }
+                    self.actions = sorted
+                    ReminderNotificationService.shared.syncActionsIfKnownLead(leadID: leadID, actions: sorted)
                 }
             }
         })
