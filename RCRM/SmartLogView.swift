@@ -155,11 +155,6 @@ struct SmartLogView: View {
                                 .textInputAutocapitalization(.words)
                                 .padding()
                                 .frostedGlass(cornerRadius: 14)
-                                .onChange(of: name) { _, newName in
-                                    if !userEditedSms {
-                                        introSmsText = SmartLogPlanner.renderIntroSms(template: nil, contactName: newName)
-                                    }
-                                }
 
                             HStack(spacing: 10) {
                                 TextField("Phone Number", text: $phone)
@@ -313,42 +308,12 @@ struct SmartLogView: View {
                         .padding(18)
                         .frostedGlass(cornerRadius: 18)
 
-                        // Intro SMS Section
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Label("Intro SMS Draft", systemImage: "message.badge.filled.fill")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(Color.neonGreen)
-                                Spacer()
-                                Button("Reset") {
-                                    introSmsText = SmartLogPlanner.renderIntroSms(template: nil, contactName: name)
-                                    userEditedSms = false
-                                }
-                                .font(.caption.bold())
-                                .foregroundStyle(Color.textSecondary)
-                            }
-
-                            TextField("SMS Message", text: $introSmsText, axis: .vertical)
-                                .lineLimit(3...5)
-                                .padding()
-                                .frostedGlass(cornerRadius: 14)
-                                .onChange(of: introSmsText) { _, _ in
-                                    userEditedSms = true
-                                }
-
-                            Button {
-                                sendSms()
-                            } label: {
-                                Label("Open in Messages", systemImage: "arrow.up.right.square")
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(Color.neonGreen)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 10)
-                                    .background(Color.neonGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.neonGreen.opacity(0.6), lineWidth: 1))
-                            }
-                            .disabled(phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
+                        IntroSmsDraftSection(
+                            contactName: name,
+                            phone: phone,
+                            text: $introSmsText,
+                            userEdited: $userEditedSms
+                        )
                         .padding(18)
                         .frostedGlass(cornerRadius: 18)
 
@@ -503,12 +468,8 @@ struct SmartLogView: View {
     }
 
     private func sendSms() {
-        let cleanPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanPhone.isEmpty else { return }
-        let encodedBody = introSmsText.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let url = URL(string: "sms:\(cleanPhone)&body=\(encodedBody)") {
-            openURL(url)
-        }
+        guard let url = SmartLogPlanner.messagesURL(phone: phone, body: introSmsText) else { return }
+        openURL(url)
     }
 
     @MainActor
@@ -570,5 +531,67 @@ struct SmartLogView: View {
             errorMessage = error.localizedDescription
             isSaving = false
         }
+    }
+}
+
+struct IntroSmsDraftSection: View {
+    let contactName: String
+    let phone: String
+    @Binding var text: String
+    @Binding var userEdited: Bool
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Text suggestion", systemImage: "sparkles")
+                    .font(.caption.bold())
+                    .foregroundStyle(Color.neonGreen)
+                Spacer()
+                Button("Reset") {
+                    text = SmartLogPlanner.renderIntroSms(template: nil, contactName: contactName)
+                    userEdited = false
+                }
+                .font(.caption.bold())
+                .foregroundStyle(Color.textSecondary)
+            }
+
+            Text("Personalized intro SMS — same draft Smart Log uses. Edit before sending.")
+                .font(.caption)
+                .foregroundStyle(Color.textSecondary)
+
+            TextField("SMS Message", text: $text, axis: .vertical)
+                .lineLimit(3...6)
+                .padding()
+                .frostedGlass(cornerRadius: 14)
+                .onChange(of: text) { _, _ in
+                    userEdited = true
+                }
+
+            Button {
+                openDraftInMessages()
+            } label: {
+                Label("Open in Messages", systemImage: "arrow.up.right.square")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(Color.neonGreen)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.neonGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.neonGreen.opacity(0.6), lineWidth: 1))
+            }
+            .disabled(phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .onAppear { refreshDraftIfNeeded() }
+        .onChange(of: contactName) { _, _ in refreshDraftIfNeeded() }
+    }
+
+    private func refreshDraftIfNeeded() {
+        guard !userEdited else { return }
+        text = SmartLogPlanner.renderIntroSms(template: nil, contactName: contactName)
+    }
+
+    private func openDraftInMessages() {
+        guard let url = SmartLogPlanner.messagesURL(phone: phone, body: text) else { return }
+        openURL(url)
     }
 }

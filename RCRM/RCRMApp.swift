@@ -2331,6 +2331,13 @@ enum SmartLogPlanner {
         return base.replacingOccurrences(of: nameToken, with: replacement)
     }
 
+    static func messagesURL(phone: String, body: String) -> URL? {
+        let cleanPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanPhone.isEmpty else { return nil }
+        let encodedBody = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        return URL(string: "sms:\(cleanPhone)&body=\(encodedBody)")
+    }
+
     /** Optional fields left empty in a quick log never erase the full contact profile. */
     static func profileUpdates(draft: [String: String]) -> [String: Any] {
         var updates: [String: Any] = [:]

@@ -38,6 +38,26 @@ final class GoogleCalendarService: ObservableObject {
 
     var needsGoogleLink: Bool { !hasAccess || !hasGoogleAccount }
 
+    var settingsSummary: String {
+        switch access {
+        case .denied, .restricted:
+            return "Calendar access is off in iOS Settings"
+        case .notDetermined:
+            return "Not linked yet"
+        case .fullAccess, .writeOnly:
+            break
+        @unknown default:
+            break
+        }
+        guard hasAccess else { return "Not linked yet" }
+        if !hasGoogleAccount { return "Add Google under iPhone Calendar accounts" }
+        let targetID = defaultCalendarID ?? calendars.first(where: \.canWrite)?.id
+        if let targetID, let cal = calendars.first(where: { $0.id == targetID }) {
+            return "New appointments save to \(cal.displayName)"
+        }
+        return "Google Calendar linked"
+    }
+
     init() {
         hideDuplicateHolidays = defaults.object(forKey: hideDupKey) as? Bool ?? true
         if defaults.bool(forKey: filterSetKey) {
@@ -443,120 +463,112 @@ final class GoogleCalendarService: ObservableObject {
     }
 }
 
-struct CalendarSettingsSheet: View {
+struct CalendarSettingsView: View {
     @ObservedObject var calendar: GoogleCalendarService
     let monthStartMillis: Int64
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                SpaceBackgroundView()
-                List {
-                    Section {
-                        if calendar.hasGoogleAccount {
-                            Label("Google Calendar is linked", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(Color.neonGreen)
-                        } else if calendar.hasAccess {
-                            Text("Calendar access is on, but this iPhone has not given RCRM a Google calendar. The accounts RCRM can see are listed below. The Google Calendar app does not share its events until the Google account is added in Settings.")
-                                .font(.footnote)
-                                .foregroundStyle(Color.textSecondary)
-                            Text("Settings → Calendar → Accounts → Add Account → Google. Then return here.")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(Color.textPrimary)
-                            Button("Open Settings") { openCalendarAccounts() }
-                            Text("In Settings, go back, then open Calendar → Accounts → Add Account → Google. RCRM will link it when you return.")
-                                .font(.footnote)
-                                .foregroundStyle(Color.textSecondary)
-                        } else {
-                            Button {
-                                Task { await calendar.requestAccess(monthStartMillis: monthStartMillis) }
-                            } label: {
-                                Label("Link Google Calendar", systemImage: "link")
-                                    .font(.headline)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 6)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.neonCyan)
-                            .foregroundStyle(.black)
+        ZStack {
+            SpaceBackgroundView()
+            List {
+                Section {
+                    if calendar.hasGoogleAccount {
+                        Label("Google Calendar is linked", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(Color.neonGreen)
+                    } else if calendar.hasAccess {
+                        Text("Calendar access is on, but this iPhone has not given RCRM a Google calendar. The accounts RCRM can see are listed below. The Google Calendar app does not share its events until the Google account is added in Settings.")
+                            .font(.footnote)
+                            .foregroundStyle(Color.textSecondary)
+                        Text("Settings → Calendar → Accounts → Add Account → Google. Then return here.")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.textPrimary)
+                        Button("Open Settings") { openCalendarAccounts() }
+                        Text("In Settings, go back, then open Calendar → Accounts → Add Account → Google. RCRM will link it when you return.")
+                            .font(.footnote)
+                            .foregroundStyle(Color.textSecondary)
+                    } else {
+                        Button {
+                            Task { await calendar.requestAccess(monthStartMillis: monthStartMillis) }
+                        } label: {
+                            Label("Link Google Calendar", systemImage: "link")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
                         }
-                    }.listRowBackground(Color.glassPanel)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.neonCyan)
+                        .foregroundStyle(.black)
+                    }
+                }.listRowBackground(Color.glassPanel)
 
-                    Section("Access") {
-                        if calendar.hasAccess {
-                            Label("Calendar access is on", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(Color.neonGreen)
-                        } else {
-                            Text("Calendar access is not on yet. Tap Link Google Calendar above.")
-                                .foregroundStyle(Color.textSecondary)
-                            if calendar.access == .denied || calendar.access == .restricted {
-                                Button("Open Settings") {
-                                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                                }
-                            }
-                        }
-                    }.listRowBackground(Color.glassPanel)
-
+                Section("Access") {
                     if calendar.hasAccess {
-                        Section("New appointments") {
-                            if writable.isEmpty {
-                                Text("No writable calendar is on this iPhone yet.")
-                                    .foregroundStyle(Color.textSecondary)
-                            } else {
-                                Picker("Save to", selection: Binding(
-                                    get: { calendar.defaultCalendarID ?? writable.first?.id ?? "" },
-                                    set: { calendar.setDefaultCalendar($0) }
-                                )) {
-                                    ForEach(writable) { item in
-                                        Text(pickerTitle(item)).tag(item.id)
-                                    }
+                        Label("Calendar access is on", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(Color.neonGreen)
+                    } else {
+                        Text("Calendar access is not on yet. Tap Link Google Calendar above.")
+                            .foregroundStyle(Color.textSecondary)
+                        if calendar.access == .denied || calendar.access == .restricted {
+                            Button("Open Settings") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                            }
+                        }
+                    }
+                }.listRowBackground(Color.glassPanel)
+
+                if calendar.hasAccess {
+                    Section("New appointments") {
+                        if writable.isEmpty {
+                            Text("No writable calendar is on this iPhone yet.")
+                                .foregroundStyle(Color.textSecondary)
+                        } else {
+                            Picker("Save to", selection: Binding(
+                                get: { calendar.defaultCalendarID ?? writable.first?.id ?? "" },
+                                set: { calendar.setDefaultCalendar($0) }
+                            )) {
+                                ForEach(writable) { item in
+                                    Text(pickerTitle(item)).tag(item.id)
                                 }
                             }
-                        }.listRowBackground(Color.glassPanel)
+                        }
+                    }.listRowBackground(Color.glassPanel)
 
-                        Section("Show on the agenda") {
-                            Toggle("Hide duplicate holiday calendars", isOn: Binding(
-                                get: { calendar.hideDuplicateHolidays },
-                                set: { calendar.setHideDuplicateHolidays($0) }
-                            ))
-                            if calendar.calendars.isEmpty {
-                                Text("No calendars found.")
-                                    .foregroundStyle(Color.textSecondary)
-                            }
-                            ForEach(calendar.calendars) { item in
-                                Toggle(isOn: Binding(
-                                    get: { calendar.visibleCalendarIDs?.contains(item.id) ?? true },
-                                    set: { calendar.setCalendarVisible(item.id, visible: $0) }
-                                )) {
-                                    HStack(spacing: 10) {
-                                        Circle().fill(Color.calendarTint(item.colorHex)).frame(width: 10, height: 10)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(item.displayName)
-                                            if !item.accountName.isEmpty {
-                                                Text(item.accountName).font(.caption).foregroundStyle(Color.textSecondary)
-                                            }
+                    Section("Show on the agenda") {
+                        Toggle("Hide duplicate holiday calendars", isOn: Binding(
+                            get: { calendar.hideDuplicateHolidays },
+                            set: { calendar.setHideDuplicateHolidays($0) }
+                        ))
+                        if calendar.calendars.isEmpty {
+                            Text("No calendars found.")
+                                .foregroundStyle(Color.textSecondary)
+                        }
+                        ForEach(calendar.calendars) { item in
+                            Toggle(isOn: Binding(
+                                get: { calendar.visibleCalendarIDs?.contains(item.id) ?? true },
+                                set: { calendar.setCalendarVisible(item.id, visible: $0) }
+                            )) {
+                                HStack(spacing: 10) {
+                                    Circle().fill(Color.calendarTint(item.colorHex)).frame(width: 10, height: 10)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.displayName)
+                                        if !item.accountName.isEmpty {
+                                            Text(item.accountName).font(.caption).foregroundStyle(Color.textSecondary)
                                         }
                                     }
                                 }
                             }
-                        }.listRowBackground(Color.glassPanel)
-                    }
+                        }
+                    }.listRowBackground(Color.glassPanel)
                 }
-                .scrollContentBackground(.hidden)
             }
-            .navigationTitle("Google Calendar")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-            .onAppear {
-                Task { await calendar.prepare(monthStartMillis: monthStartMillis) }
-            }
+            .scrollContentBackground(.hidden)
         }
-        .preferredColorScheme(.dark)
-        .tint(.neonCyan)
+        .navigationTitle("Google Calendar")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            Task { await calendar.prepare(monthStartMillis: monthStartMillis) }
+        }
     }
 
     private var writable: [AppointmentAgenda.UserCalendar] {
@@ -570,6 +582,23 @@ struct CalendarSettingsSheet: View {
     private func openCalendarAccounts() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         openURL(url)
+    }
+}
+
+struct CalendarSettingsSheet: View {
+    @ObservedObject var calendar: GoogleCalendarService
+    let monthStartMillis: Int64
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            CalendarSettingsView(calendar: calendar, monthStartMillis: monthStartMillis)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
+        }
+        .preferredColorScheme(.dark)
+        .tint(.neonCyan)
     }
 }
 

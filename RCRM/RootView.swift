@@ -185,12 +185,12 @@ struct AppShell: View {
         TabView(selection: $selectedTab) {
             NavigationStack {
                 HomeView(userID: userID, showingAdd: $showingAdd, onOpenAgenda: { selectedTab = 1 })
-                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Sign out") { session.signOut() } } }
             }.tabItem { Label("Home", systemImage: "house") }.tag(0)
             NavigationStack { AppointmentsView(userID: userID) }.tabItem { Label("Appointments", systemImage: "calendar") }.tag(1)
             NavigationStack { FollowUpsView(userID: userID) }.tabItem { Label("Follow-ups", systemImage: "checklist") }.tag(2)
             NavigationStack { PipelinesView(userID: userID) }.tabItem { Label("Pipelines", systemImage: "chart.bar") }.tag(3)
             NavigationStack { ContactsView(userID: userID) }.tabItem { Label("Contacts", systemImage: "person.2") }.tag(4)
+            NavigationStack { SettingsView() }.tabItem { Label("Settings", systemImage: "gearshape") }.tag(5)
         }.environmentObject(store)
             .environmentObject(calendar)
             .sheet(isPresented: $showingAdd) { LeadFormSheet(userID: userID) }.environmentObject(store)
@@ -1627,6 +1627,8 @@ struct LeadDetailView: View {
     @State private var outcomeAction: NextAction?
     @State private var workingActionID: String?
     @State private var actionError: String?
+    @State private var introSmsText = ""
+    @State private var userEditedIntroSms = false
     private var openActions: [NextAction] { activity.actions.filter { $0.status == .pending } }
     var body: some View {
         Group {
@@ -1634,10 +1636,29 @@ struct LeadDetailView: View {
                 List {
                     Section { HStack {
                         action("Call", "phone.fill", "tel", lead.phone)
-                        action("Text", "message.fill", "sms", lead.phone)
+                        Button {
+                            if let url = SmartLogPlanner.messagesURL(phone: lead.phone, body: introSmsText) {
+                                openURL(url)
+                            } else {
+                                contact("sms", lead.phone, openURL)
+                            }
+                        } label: {
+                            Label("Text", systemImage: "message.fill").frame(maxWidth: .infinity)
+                        }
+                        .disabled(lead.phone.isEmpty)
+                        .buttonStyle(.borderless)
                         action("Email", "envelope.fill", "mailto", lead.email)
                     }.frame(maxWidth: .infinity)
                         Button { loggingOutcome = true } label: { Label("Log Outcome", systemImage: "square.and.pencil").bold().frame(maxWidth: .infinity) }
+                    }.listRowBackground(Color.glassPanel)
+                    Section("Text suggestion") {
+                        IntroSmsDraftSection(
+                            contactName: lead.name,
+                            phone: lead.phone,
+                            text: $introSmsText,
+                            userEdited: $userEditedIntroSms
+                        )
+                        .padding(.vertical, 4)
                     }.listRowBackground(Color.glassPanel)
                     Section("Contact") {
                         detail("Phone", lead.phone); detail("Email", lead.email); detail("Address", lead.address)
@@ -1684,7 +1705,20 @@ struct LeadDetailView: View {
                     .sheet(isPresented: $addingReminder) { ReminderSheetView(leadID: leadID, userID: userID) }
                     .sheet(item: $rescheduling) { ReminderSheetView(leadID: leadID, userID: userID, existing: $0) }
             } else { ContentUnavailableView("Contact unavailable", systemImage: "person.crop.circle.badge.questionmark").background { SpaceBackgroundView() } }
-        }.onAppear { activity.start(leadID: leadID, userID: userID) }.onDisappear { activity.stop() }
+        }.onAppear {
+            activity.start(leadID: leadID, userID: userID)
+            if introSmsText.isEmpty, let lead = store.leads.first(where: { $0.id == leadID }) {
+                introSmsText = SmartLogPlanner.renderIntroSms(template: nil, contactName: lead.name)
+            }
+        }
+        .onChange(of: leadID) { _, _ in
+            userEditedIntroSms = false
+            introSmsText = ""
+            if let lead = store.leads.first(where: { $0.id == leadID }) {
+                introSmsText = SmartLogPlanner.renderIntroSms(template: nil, contactName: lead.name)
+            }
+        }
+        .onDisappear { activity.stop() }
             .alert("Action couldn't be saved", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) { Button("OK") { actionError = nil } } message: { Text(actionError ?? "") }
     }
     private func notesSection(_ lead: Lead) -> some View {
@@ -2397,16 +2431,98 @@ struct ContactNotesSheet: View {
     }
 }
 
-struct NotificationSettingsSheet: View {
+struct SettingsView: View {
+    @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var calendar: GoogleCalendarService
+    @EnvironmentObject private var notifications: ReminderNotificationService
+
+    private var monthStartMillis: Int64 {
+        AppointmentAgenda.startOfMonthContaining(Int64(Date().timeIntervalSince1970 * 1000))
+    }
+
+    var body: some View {
+        ZStack {
+            SpaceBackgroundView()
+            List {
+                Section {
+                    if let email = session.user?.email, !email.isEmpty {
+                        LabeledContent("Signed in") {
+                            Text(email)
+                                .foregroundStyle(Color.textSecondary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }.listRowBackground(Color.glassPanel)
+
+                Section("Integrations") {
+                    NavigationLink {
+                        CalendarSettingsView(calendar: calendar, monthStartMillis: monthStartMillis)
+                    } label: {
+                        settingsNavRow(
+                            symbol: "calendar.badge.clock",
+                            tint: .neonCyan,
+                            title: "Google Calendar",
+                            subtitle: calendar.settingsSummary
+                        )
+                    }
+                }.listRowBackground(Color.glassPanel)
+
+                Section("Alerts") {
+                    NavigationLink {
+                        NotificationSettingsView(notifications: notifications)
+                    } label: {
+                        settingsNavRow(
+                            symbol: notifications.isAuthorized ? "bell.badge.fill" : "bell.slash.fill",
+                            tint: notifications.isAuthorized ? .neonPurple : .neonOrange,
+                            title: "Notifications & Daily Briefing",
+                            subtitle: notifications.isAuthorized ? "Alerts and digest are on" : "Turn on reminder alerts"
+                        )
+                    }
+                }.listRowBackground(Color.glassPanel)
+
+                Section {
+                    Button("Sign out", role: .destructive) {
+                        session.signOut()
+                    }
+                }.listRowBackground(Color.glassPanel)
+            }
+            .scrollContentBackground(.hidden)
+        }
+        .navigationTitle("Settings")
+        .onAppear {
+            Task {
+                await calendar.prepare(monthStartMillis: monthStartMillis)
+                await notifications.refreshAuthorizationStatus()
+            }
+        }
+    }
+
+    private func settingsNavRow(symbol: String, tint: Color, title: String, subtitle: String) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(tint)
+                .frame(width: 32)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .foregroundStyle(Color.textPrimary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(Color.textSecondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct NotificationSettingsView: View {
     @ObservedObject var notifications: ReminderNotificationService
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                SpaceBackgroundView()
-                List {
+        ZStack {
+            SpaceBackgroundView()
+            List {
                     Section("Reminder Alerts") {
                         if notifications.isAuthorized {
                             Label("Notifications are on", systemImage: "checkmark.circle.fill")
@@ -2502,17 +2618,27 @@ struct NotificationSettingsSheet: View {
                     }.listRowBackground(Color.glassPanel)
                 }
                 .scrollContentBackground(.hidden)
-            }
-            .navigationTitle("Notifications")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+        }
+        .navigationTitle("Notifications")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            Task { await notifications.refreshAuthorizationStatus() }
+        }
+    }
+}
+
+struct NotificationSettingsSheet: View {
+    @ObservedObject var notifications: ReminderNotificationService
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            NotificationSettingsView(notifications: notifications)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
                 }
-            }
-            .onAppear {
-                Task { await notifications.refreshAuthorizationStatus() }
-            }
         }
         .preferredColorScheme(.dark)
         .tint(.neonCyan)
