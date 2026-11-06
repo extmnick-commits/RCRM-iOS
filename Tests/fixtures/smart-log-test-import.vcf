@@ -1,0 +1,10 @@
+BEGIN:VCARD
+VERSION:3.0
+N:Tester;SmartLog
+FN:Smart Log Tester
+ORG:RCRM QA
+TITLE:Test Import
+TEL;TYPE=CELL:(555) 867-5309
+EMAIL:smartlog.tester@example.com
+ADR;TYPE=HOME:;;123 Neon Way;Portland;OR;97201;USA
+END:VCARD

@@ -168,6 +168,10 @@ struct SignInView: View {
         }.padding(20).frostedGlass()
     }.padding(24).frame(maxWidth: 500).frame(maxWidth: .infinity) }.safeAreaPadding(.top, 40) } }
 }
+private struct LeadDeepLinkItem: Identifiable, Equatable {
+    let id: String
+}
+
 struct AppShell: View {
     let userID: String
     @StateObject private var store = LeadsStore()
@@ -190,10 +194,15 @@ struct AppShell: View {
         }.environmentObject(store)
             .environmentObject(calendar)
             .sheet(isPresented: $showingAdd) { LeadFormSheet(userID: userID) }.environmentObject(store)
-            .sheet(isPresented: Binding(get: { session.pendingLeadID != nil }, set: { if !$0 { session.pendingLeadID = nil } })) {
-                if let leadID = session.pendingLeadID {
-                    NavigationStack { LeadDetailView(leadID: leadID, userID: userID) }
+            .sheet(item: Binding(
+                get: { session.pendingLeadID.map(LeadDeepLinkItem.init) },
+                set: { session.pendingLeadID = $0?.id }
+            )) { item in
+                NavigationStack {
+                    LeadDetailView(leadID: item.id, userID: userID)
                 }
+                .environmentObject(store)
+                .environmentObject(calendar)
             }
             .fullScreenCover(isPresented: Binding(get: { session.pendingSmartLog }, set: { if !$0 { session.pendingSmartLog = false; session.pendingSmartLogImport = false } })) {
                 SmartLogView(userID: userID, openContactPickerOnAppear: session.pendingSmartLogImport) {
@@ -536,6 +545,11 @@ struct HomeView: View {
     private func metric(_ label: String, _ value: Int, _ color: Color) -> some View { VStack(alignment: .leading, spacing: 5) { Text("\(value)").font(.title.bold()).foregroundStyle(color); Text(label).font(.caption).foregroundStyle(Color.textSecondary) }.frame(maxWidth: .infinity, alignment: .leading) }
 }
 
+private struct CalendarEventPreviewItem: Identifiable {
+    let event: EKEvent
+    var id: String { event.eventIdentifier ?? event.calendarItemIdentifier }
+}
+
 struct AppointmentsView: View {
     let userID: String
     @EnvironmentObject private var store: LeadsStore
@@ -549,7 +563,7 @@ struct AppointmentsView: View {
     @State private var editorContext: AppointmentEditorContext?
     @State private var outcomeContext: AppointmentOutcomeContext?
     @State private var linkingItem: AppointmentAgenda.AgendaItem?
-    @State private var previewEvent: EKEvent?
+    @State private var previewEventItem: CalendarEventPreviewItem?
     @State private var workingID: String?
     @State private var errorMessage: String?
 
@@ -831,12 +845,10 @@ struct AppointmentsView: View {
         .sheet(item: $linkingItem) { item in
             LinkCalendarEventSheet(item: item, userID: userID, calendar: calendar)
         }
-        .sheet(isPresented: Binding(get: { previewEvent != nil }, set: { if !$0 { previewEvent = nil } })) {
-            if let previewEvent {
-                CalendarEventPreview(event: previewEvent) {
-                    self.previewEvent = nil
-                    Task { await calendar.load(monthStartMillis: monthStartMillis) }
-                }
+        .sheet(item: $previewEventItem) { item in
+            CalendarEventPreview(event: item.event) {
+                previewEventItem = nil
+                Task { await calendar.load(monthStartMillis: monthStartMillis) }
             }
         }
         .onAppear { Task { await calendar.load(monthStartMillis: monthStartMillis) } }
@@ -893,7 +905,7 @@ struct AppointmentsView: View {
 
     private func openCalendar(_ item: AppointmentAgenda.AgendaItem) {
         if let event = calendar.event(for: item) {
-            previewEvent = event
+            previewEventItem = CalendarEventPreviewItem(event: event)
             return
         }
         if let url = AppointmentAgenda.calendarAppURL(at: item.startMillis) {

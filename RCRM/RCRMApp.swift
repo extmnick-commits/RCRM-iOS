@@ -24,7 +24,9 @@ struct RCRMApp: App {
                 .environmentObject(notifications)
                 .onAppear {
                     notifications.onOpenLead = { [weak session] leadID in
-                        session?.pendingLeadID = leadID
+                        DispatchQueue.main.async {
+                            session?.pendingLeadID = leadID
+                        }
                     }
                     if let queued = notifications.consumePendingLeadID() {
                         session.pendingLeadID = queued
@@ -3377,6 +3379,17 @@ final class ReminderNotificationService: NSObject, ObservableObject, UNUserNotif
         return pendingOpenedLeadID
     }
 
+    @MainActor
+    func deliverLeadDeepLink(_ leadID: String) {
+        let trimmed = leadID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let onOpenLead {
+            onOpenLead(trimmed)
+        } else {
+            pendingOpenedLeadID = trimmed
+        }
+    }
+
     func refreshAuthorizationStatus() async {
         let settings = await center.notificationSettings()
         authorizationStatus = settings.authorizationStatus
@@ -3588,15 +3601,16 @@ final class ReminderNotificationService: NSObject, ObservableObject, UNUserNotif
     ) {
         let userInfo = response.notification.request.content.userInfo
         let extractedLeadID = ReminderNotificationPlanner.extractLeadId(fromUserInfo: userInfo)
-        Task { @MainActor in
-            if let leadID = extractedLeadID {
-                if let onOpenLead = self.onOpenLead {
-                    onOpenLead(leadID)
-                } else {
-                    self.pendingOpenedLeadID = leadID
-                }
+        guard let leadID = extractedLeadID else {
+            completionHandler()
+            return
+        }
+        // Defer UI work to the next main run loop turn so presentation does not race UIKit's notification handling.
+        DispatchQueue.main.async {
+            Task { @MainActor in
+                ReminderNotificationService.shared.deliverLeadDeepLink(leadID)
+                completionHandler()
             }
         }
-        completionHandler()
     }
 }
