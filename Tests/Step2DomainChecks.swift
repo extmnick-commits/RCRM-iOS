@@ -367,4 +367,154 @@ check(presetTomorrow == date(2026, 10, 27, 19, 0), "presetFollowUpDate tomorrow 
 let presetWeek = SmartLogPlanner.presetFollowUpDate(preset: .plus1Week, now: date(2026, 10, 26, 10, 0), presetHour: 19, presetMinute: 0, calendar: calendar)
 check(presetWeek == date(2026, 11, 2, 19, 0), "presetFollowUpDate +1 week 7pm")
 
-print("Passed \(assertions) Step 2, Step 3, Step 4 & Step 5 compatibility checks.")
+// Step 6: LocalSmsDraft On-Device AI Model & Recommendation Checks
+let tokens = LocalSmsDraft.extractTokens(from: "Hello Alex, let's discuss term life insurance quote!")
+check(tokens.contains("alex") && tokens.contains("insurance") && tokens.contains("quote"), "extractTokens parses words")
+
+// Intent detection matching Android keyword heuristics
+let insDetect = LocalSmsDraft.detectIntent(notes: "Asked about insurance quote and policy coverage")
+check(insDetect.intent == .insurance && insDetect.confidence >= 0.70, "detectIntent detects insurance keywords")
+
+let invDetect = LocalSmsDraft.detectIntent(notes: "Review 401k rollover to IRA investment account")
+check(invDetect.intent == .investment && invDetect.confidence >= 0.70, "detectIntent detects investment keywords")
+
+let apptDetect = LocalSmsDraft.detectIntent(notes: "Let's schedule a meeting on the calendar")
+check(apptDetect.intent == .appointment && apptDetect.confidence >= 0.70, "detectIntent detects appointment keywords")
+
+let recDetect = LocalSmsDraft.detectIntent(notes: "Discussed career opportunity and licensing overview")
+check(recDetect.intent == .recruit && recDetect.confidence >= 0.70, "detectIntent detects recruit keywords")
+
+let checkInDetect = LocalSmsDraft.detectIntent(notes: "   ")
+check(checkInDetect.intent == .checkIn && checkInDetect.confidence == 0.50, "detectIntent empty notes defaults to check-in")
+
+let catBoostDetect = LocalSmsDraft.detectIntent(notes: "Called", category: "Recruit")
+check(catBoostDetect.intent == .recruit, "detectIntent boosts recruit category")
+
+let explicitDetect = LocalSmsDraft.detectIntent(notes: "Random notes", explicitIntent: .insurance)
+check(explicitDetect.intent == .insurance && explicitDetect.confidence == 0.98, "detectIntent honors explicit user intent")
+
+// Android exact wording parity
+let insSms = LocalSmsDraft.generate(name: "Alex Rivera", notes: "Discussed life insurance quote")
+check(insSms == "Hi Alex, following up on our recent chat regarding your coverage options! Let me know if you have any questions.", "LocalSmsDraft insurance matches Android parity")
+
+let invSms = LocalSmsDraft.generate(name: "Jordan Lee", notes: "Rollover 401k to investment account")
+check(invSms == "Hi Jordan, following up on our discussion about your financial goals! Let me know when you'd like to review the details.", "LocalSmsDraft investment matches Android parity")
+
+let apptSms = LocalSmsDraft.generate(name: "Sam", notes: "Confirm upcoming appointment schedule")
+check(apptSms == "Hi Sam, looking forward to connecting for our upcoming meeting! Please let me know if that time still works best for you.", "LocalSmsDraft appointment matches Android parity")
+
+let checkInSms = LocalSmsDraft.generate(name: "Taylor", notes: "")
+check(checkInSms == "Hi Taylor, just following up to see how your day is going! Let me know if you have any questions or when is a good time to connect.", "LocalSmsDraft check-in matches Android parity")
+
+let blankNameSms = LocalSmsDraft.generate(name: "  ", notes: "insurance quote")
+check(blankNameSms.hasPrefix("Hi there, following up on our recent chat regarding your coverage options!"), "LocalSmsDraft blank name fallback")
+
+// Tone variations
+let warmSms = LocalSmsDraft.generate(name: "Alex", explicitIntent: .insurance, tone: .warm)
+let directSms = LocalSmsDraft.generate(name: "Alex", explicitIntent: .insurance, tone: .direct)
+let questionSms = LocalSmsDraft.generate(name: "Alex", explicitIntent: .insurance, tone: .question)
+check(warmSms != directSms && directSms != questionSms && !directSms.isEmpty, "Tone variations produce distinct copy")
+
+// Variations collection
+let variations = LocalSmsDraft.generateVariations(name: "Alex Rivera", notes: "Rollover account")
+check(variations.count == 3 && variations[0].tone == .warm && variations[1].tone == .direct && variations[2].tone == .question, "generateVariations produces 3 tone recommendations")
+
+// SmartLogPlanner helper wrapper
+let helperSms = SmartLogPlanner.renderRecommendedSms(name: "Alex", notes: "Schedule meet", category: "Prospect", intent: nil, tone: .warm)
+check(helperSms.contains("looking forward to connecting for our upcoming meeting"), "SmartLogPlanner.renderRecommendedSms delegates to LocalSmsDraft")
+
+// Step 7: SmsNoteCoach Smart Context, 2nd-Person Note Intelligence & Ask AI Co-Pilot Checks
+let multiNoteSample = """
+[Nov 06, 2026 10:15 AM | eid:act_2]: Moved to Appointment Set stage
+
+Left voicemail. He wants to review his $500k 20-year term life quote after 5pm Tuesday.
+
+[Nov 02, 2026 02:00 PM | eid:act_1]: Met with Alex and his wife Sarah. Has 2 kids. Interested in rolling over his old 401k from Kaiser.
+"""
+let coachContext = SmsContactContext(
+    name: "Alex Rivera",
+    notes: multiNoteSample,
+    category: "Prospect",
+    company: "Kaiser",
+    jobTitle: "RN",
+    salesStage: "Appointment Set"
+)
+let insight = SmsNoteCoach.analyze(context: coachContext)
+check(insight.primaryTopic?.contains("reviewing your $500k 20-year term life quote") == true, "naturalPhrase converts 3rd-person 'he wants to review his...' into 2nd-person gerund and skips stage boilerplate")
+check(insight.missedCallOrVoicemail, "Detects voicemail/missed call cue from latest note")
+check(insight.timingCue?.lowercased().contains("after 5pm") == true, "Extracts timing cue from notes")
+check(insight.personalCue == "Sarah", "Extracts named spouse rapport cue across note history")
+check(!insight.secondaryTopics.isEmpty, "Retains secondary topics from earlier notes")
+
+let smartSuggested = SmsNoteCoach.suggest(context: coachContext, style: .smart)
+check(smartSuggested.contains("sorry I missed you earlier") && smartSuggested.contains("your coverage") && !smartSuggested.contains("$500k") && smartSuggested.contains("after 5pm"), "Smart suggestion uses note context without inserting the note verbatim")
+
+let privateNoteContext = SmsContactContext(name: "Alex Rivera", notes: "Client is stressed about money and keeps avoiding my calls")
+for style in SmsDraftStyle.allCases {
+    let message = SmsNoteCoach.suggest(context: privateNoteContext, style: style).lowercased()
+    check(!message.contains("stressed about money") && !message.contains("avoiding my calls"), "Suggestions do not expose private note wording")
+}
+let instructionTurn = SmsNoteCoach.reply(context: privateNoteContext, currentDraft: "", prompt: "Ask if they have time to talk")
+check(!instructionTurn.message.lowercased().contains("stressed about money"), "Advisor request does not insert private note wording")
+let exactTurn = SmsNoteCoach.reply(context: privateNoteContext, currentDraft: "", prompt: "send this: Can we talk tomorrow?")
+check(exactTurn.message == "Can we talk tomorrow?", "Explicit wording to send is preserved")
+
+let warmSuggested = SmsNoteCoach.suggest(context: coachContext, style: .warm)
+check(warmSuggested.contains("Sarah"), "Warm suggestion weaves in spouse/personal rapport cue")
+
+// Advisor Q&A mode does not leak the advisor's question into the SMS message
+let briefingTurn = SmsNoteCoach.reply(
+    context: coachContext,
+    currentDraft: smartSuggested,
+    prompt: "Summarize what we know from the notes"
+)
+check(briefingTurn.explanation.contains("Sarah") && briefingTurn.explanation.contains("Kaiser") && briefingTurn.message.isEmpty, "Ask AI Q&A answers in chat and does not attach a new text")
+let familyQuestion = SmsNoteCoach.reply(context: coachContext, currentDraft: smartSuggested, prompt: "What do we know about his family?")
+check(familyQuestion.message.isEmpty && familyQuestion.explanation.contains("Sarah"), "Open questions stay in the conversation")
+check(SmsNoteCoach.wantsTextDraft("Make it warmer") && !SmsNoteCoach.wantsTextDraft("What's 2 plus 2?"), "Only text requests produce a new draft")
+let aside = SmsNoteCoach.reply(context: coachContext, currentDraft: smartSuggested, prompt: "He seemed nervous on the last call")
+check(aside.message.isEmpty && aside.explanation.contains("Noted"), "Sharing context does not overwrite the text")
+
+// Alternative angle cycling produces a fresh message and alternate options
+let altTurn = SmsNoteCoach.reply(
+    context: coachContext,
+    currentDraft: smartSuggested,
+    prompt: "Try another angle"
+)
+check(altTurn.message != smartSuggested && altTurn.alternatives.isEmpty, "Try another angle switches to a distinct draft with no extra alternate cards")
+
+// Topic exclusion ("don't mention...") cleanly strips the avoided phrase
+let avoidTurn = SmsNoteCoach.reply(
+    context: coachContext,
+    currentDraft: smartSuggested,
+    prompt: "Make it direct and don't mention 20-year"
+)
+check(!avoidTurn.message.lowercased().contains("20-year"), "Avoided topic is removed from the generated message")
+
+let staleContext = SmsContactContext(name: "Alex", notes: "[Jan 01, 2020 09:00 AM]: Call Tuesday after 5pm about coverage")
+let staleSuggestion = SmsNoteCoach.suggest(context: staleContext)
+check(!staleSuggestion.lowercased().contains("tuesday") && !staleSuggestion.lowercased().contains("5pm"), "Old note times are not offered as current availability")
+let undatedContext = SmsContactContext(name: "Alex", notes: "Call tomorrow about coverage")
+check(SmsNoteCoach.analyze(context: undatedContext).timingCue == nil, "Undated note times are not treated as current")
+let casualPreference = SmsWritingPreferences(tone: "Casual", length: "Standard", emoji: true)
+let preferred = SmsNoteCoach.preferredSuggestion(context: staleContext, preferences: casualPreference)
+check(preferred.hasPrefix("Hey Alex") && preferred.contains("👋"), "Saved tone and emoji preferences affect local suggestions")
+let longTurn = SmsNoteCoach.reply(context: privateNoteContext, currentDraft: "Hi Alex, checking in.", prompt: "Make it longer")
+check(!longTurn.message.lowercased().contains("stressed about money"), "Expanding a draft does not expose note wording")
+let replyTurn = SmsNoteCoach.reply(context: staleContext, currentDraft: "Hi Alex", prompt: "Client reply: I am busy next week")
+check(!replyTurn.message.contains("I am busy next week") && replyTurn.explanation.contains("can't interpret"), "Local reply fallback is honest about its limitations")
+let directTurn = SmsNoteCoach.reply(context: staleContext, currentDraft: "Hi Alex, your appointment is confirmed.", prompt: "Make it direct")
+check(directTurn.message.contains("appointment is confirmed"), "Direct edits preserve the current draft")
+
+let oldVoicemail = SmsContactContext(name: "Alex", notes: "[Jan 01, 2020 09:00 AM]: Left voicemail about coverage")
+check(!SmsNoteCoach.suggest(context: oldVoicemail).contains("missed you earlier"), "Old call attempts are not presented as recent")
+let softerTurn = SmsNoteCoach.reply(context: staleContext, currentDraft: "Hi Alex, your appointment is confirmed.", prompt: "Make it less salesy")
+check(softerTurn.message.contains("appointment is confirmed"), "Less salesy edits retain the draft")
+
+let alreadyWarmDraft = "Hi Leandro, hope you're doing well! I'm checking in on how things are going at Walmart."
+let warmerFollowUp = SmsNoteCoach.reply(context: coachContext, currentDraft: alreadyWarmDraft, prompt: "Make it warmer and more conversational").message
+check(warmerFollowUp != alreadyWarmDraft, "A second warmer request still changes an already-warm draft")
+check(SmsNoteCoach.shouldPostProcessAppleReply(prompt: "Make it warmer"), "Style-only user prompts use local tone post-processing for Apple replies")
+check(!SmsNoteCoach.shouldPostProcessAppleReply(prompt: "Summarize what we know from the notes"), "Advisor Q&A prompts skip message post-processing")
+
+print("Passed \(assertions) Step 2, Step 3, Step 4, Step 5, Step 6 & Step 7 compatibility checks.")

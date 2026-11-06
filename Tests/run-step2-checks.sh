@@ -11,14 +11,16 @@ import sys
 root = Path(sys.argv[1])
 source = (root / 'RCRM/RCRMApp.swift').read_text()
 domain = source[source.index('enum PipelineType:'):source.index('struct Lead: Identifiable')]
+coach_source = (root / 'RCRM/SmsCoach.swift').read_text()
+coach_domain = coach_source[coach_source.index('struct SmsCoachTurn:'):coach_source.index('enum SmsCoachEngine {')]
 tests = (root / 'Tests/Step2DomainChecks.swift').read_text()
-Path(sys.argv[2]).write_text('import Foundation\n' + domain + '\n' + tests)
+Path(sys.argv[2]).write_text('import Foundation\n' + domain + '\n' + coach_domain + '\n' + tests)
 PY
 if [[ "${1:-}" == "--simulator" && -n "${2:-}" ]]; then
     simulator_id="$2"
     simulator_arch="$(uname -m)"
     simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-    xcrun --sdk iphonesimulator swiftc -sdk "$simulator_sdk" -target "$simulator_arch-apple-ios17.0-simulator" \
+    xcrun --sdk iphonesimulator swiftc -sdk "$simulator_sdk" -target "$simulator_arch-apple-ios26.0-simulator" \
         -module-cache-path "$check_dir/cache" "$check_dir/main.swift" -o "$check_dir/Step2DomainChecks"
     xcrun simctl spawn "$simulator_id" "$check_dir/Step2DomainChecks"
 elif [[ $# -eq 0 ]]; then

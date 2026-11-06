@@ -2420,6 +2420,284 @@ enum SmartLogPlanner {
             return calendar.date(from: comps) ?? month
         }
     }
+
+    static func renderRecommendedSms(
+        name: String,
+        notes: String = "",
+        category: String = "",
+        intent: LocalSmsDraft.Intent? = nil,
+        tone: LocalSmsDraft.Tone = .warm
+    ) -> String {
+        LocalSmsDraft.generate(name: name, notes: notes, category: category, explicitIntent: intent, tone: tone)
+    }
+}
+
+#if canImport(NaturalLanguage)
+import NaturalLanguage
+#endif
+
+enum LocalSmsDraft {
+    enum Intent: String, CaseIterable, Identifiable {
+        case checkIn = "check_in"
+        case insurance = "insurance"
+        case investment = "investment"
+        case appointment = "appointment"
+        case recruit = "recruit"
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .checkIn: return "Check-In"
+            case .insurance: return "Coverage"
+            case .investment: return "Goals"
+            case .appointment: return "Meet"
+            case .recruit: return "Opportunity"
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .checkIn: return "message.fill"
+            case .insurance: return "shield.lefthalf.filled"
+            case .investment: return "chart.line.uptrend.xyaxis"
+            case .appointment: return "calendar"
+            case .recruit: return "person.2.badge.gearshape"
+            }
+        }
+    }
+
+    enum Tone: String, CaseIterable, Identifiable {
+        case warm = "warm"
+        case direct = "direct"
+        case question = "question"
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .warm: return "Warm"
+            case .direct: return "Direct"
+            case .question: return "Action"
+            }
+        }
+    }
+
+    struct Recommendation: Identifiable, Equatable {
+        var id: UUID
+        let text: String
+        let intent: Intent
+        let tone: Tone
+        let confidence: Double
+        let contextBadge: String
+
+        init(
+            id: UUID = UUID(),
+            text: String,
+            intent: Intent,
+            tone: Tone,
+            confidence: Double,
+            contextBadge: String
+        ) {
+            self.id = id
+            self.text = text
+            self.intent = intent
+            self.tone = tone
+            self.confidence = confidence
+            self.contextBadge = contextBadge
+        }
+    }
+
+    static func extractTokens(from text: String) -> [String] {
+        #if canImport(NaturalLanguage)
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        var tokens: [String] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { tokenRange, _ in
+            let word = String(text[tokenRange]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !word.isEmpty { tokens.append(word) }
+            return true
+        }
+        return tokens
+        #else
+        return text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        #endif
+    }
+
+    static func detectIntent(
+        notes: String,
+        category: String = "",
+        explicitIntent: Intent? = nil
+    ) -> (intent: Intent, confidence: Double, reason: String) {
+        if let explicit = explicitIntent {
+            return (explicit, 0.98, "Selected: \(explicit.label)")
+        }
+
+        let lowerNotes = notes.lowercased()
+        let lowerCategory = category.lowercased()
+        let tokens = Set(extractTokens(from: "\(lowerNotes) \(lowerCategory)"))
+
+        let insuranceKeywords = ["quote", "insurance", "policy", "coverage", "premium", "beneficiary", "beneficiaries", "term", "underwriting", "carrier"]
+        let investmentKeywords = ["invest", "investment", "rollover", "account", "401k", "ira", "roth", "contribution", "wealth", "portfolio", "fund", "savings"]
+        let appointmentKeywords = ["appointment", "meet", "meeting", "schedule", "calendar", "zoom", "fna", "kitchen"]
+        let recruitKeywords = ["recruit", "recruiting", "opportunity", "bop", "iba", "interview", "licensing", "license", "career", "partner"]
+
+        var insuranceScore = 0
+        var matchedInsurance: [String] = []
+        for kw in insuranceKeywords {
+            if lowerNotes.contains(kw) || lowerCategory.contains(kw) || tokens.contains(kw) {
+                insuranceScore += (lowerNotes.contains(kw) ? 2 : 1)
+                matchedInsurance.append(kw)
+            }
+        }
+
+        var investmentScore = 0
+        var matchedInvestment: [String] = []
+        for kw in investmentKeywords {
+            if lowerNotes.contains(kw) || lowerCategory.contains(kw) || tokens.contains(kw) {
+                investmentScore += (lowerNotes.contains(kw) ? 2 : 1)
+                matchedInvestment.append(kw)
+            }
+        }
+
+        var appointmentScore = 0
+        var matchedAppointment: [String] = []
+        for kw in appointmentKeywords {
+            if lowerNotes.contains(kw) || tokens.contains(kw) {
+                appointmentScore += 2
+                matchedAppointment.append(kw)
+            }
+        }
+
+        var recruitScore = 0
+        var matchedRecruit: [String] = []
+        for kw in recruitKeywords {
+            if lowerNotes.contains(kw) || lowerCategory.contains(kw) || tokens.contains(kw) {
+                recruitScore += (lowerCategory.contains(kw) ? 3 : 2)
+                matchedRecruit.append(kw)
+            }
+        }
+
+        if lowerCategory.contains("recruit") { recruitScore += 3 }
+        if lowerCategory.contains("life insurance") || lowerCategory.contains("insurance") { insuranceScore += 3 }
+        if lowerCategory.contains("investment") { investmentScore += 3 }
+
+        let candidates: [(Intent, Int, [String])] = [
+            (.insurance, insuranceScore, matchedInsurance),
+            (.investment, investmentScore, matchedInvestment),
+            (.appointment, appointmentScore, matchedAppointment),
+            (.recruit, recruitScore, matchedRecruit)
+        ]
+
+        guard let best = candidates.max(by: { $0.1 < $1.1 }), best.1 > 0 else {
+            return (.checkIn, 0.50, "General check-in")
+        }
+
+        let confidence = min(0.95, 0.55 + Double(best.1) * 0.1)
+        let reason = best.2.isEmpty ? "\(best.0.label) match" : "Matched cues: \(best.2.prefix(2).joined(separator: ", "))"
+        return (best.0, confidence, reason)
+    }
+
+    static func renderText(firstName: String, intent: Intent, tone: Tone) -> String {
+        switch (intent, tone) {
+        case (.insurance, .warm):
+            return "Hi \(firstName), following up on our recent chat regarding your coverage options! Let me know if you have any questions."
+        case (.insurance, .direct):
+            return "Hi \(firstName), I'm ready to review your coverage options whenever you have a moment. What time works best today?"
+        case (.insurance, .question):
+            return "Hi \(firstName), did you have any questions about the coverage details we discussed? Happy to walk through them with you."
+
+        case (.investment, .warm):
+            return "Hi \(firstName), following up on our discussion about your financial goals! Let me know when you'd like to review the details."
+        case (.investment, .direct):
+            return "Hi \(firstName), let's schedule a quick review of your financial goals and account setup. Are you free this afternoon?"
+        case (.investment, .question):
+            return "Hi \(firstName), how are things looking on your end regarding your savings and investment goals? Would love to catch up soon."
+
+        case (.appointment, .warm):
+            return "Hi \(firstName), looking forward to connecting for our upcoming meeting! Please let me know if that time still works best for you."
+        case (.appointment, .direct):
+            return "Hi \(firstName), confirming our scheduled meeting. Please let me know if you need to adjust the time."
+        case (.appointment, .question):
+            return "Hi \(firstName), does our upcoming meeting time still work well for your schedule?"
+
+        case (.recruit, .warm):
+            return "Hi \(firstName), really enjoyed our conversation about the business opportunity! Let me know when you have a few minutes to connect on next steps."
+        case (.recruit, .direct):
+            return "Hi \(firstName), let's set up a quick 10-minute sync to walk through the partnership overview. Does today work for you?"
+        case (.recruit, .question):
+            return "Hi \(firstName), have you had a chance to think about the team expansion opportunity we chatted about?"
+
+        case (.checkIn, .warm):
+            return "Hi \(firstName), just following up to see how your day is going! Let me know if you have any questions or when is a good time to connect."
+        case (.checkIn, .direct):
+            return "Hi \(firstName), touching base on our next steps. Let me know when you're available for a brief call."
+        case (.checkIn, .question):
+            return "Hi \(firstName), how is your week going? Let me know if there's anything I can help with!"
+        }
+    }
+
+    static func generate(
+        name: String,
+        notes: String = "",
+        category: String = "",
+        explicitIntent: Intent? = nil,
+        tone: Tone = .warm,
+        onDownloading: (() -> Void)? = nil
+    ) -> String {
+        onDownloading?()
+        let targetName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = targetName.isEmpty ? "there" : targetName
+        let firstName = SmartLogPlanner.formatFirstName(from: resolvedName).isEmpty
+            ? "there"
+            : SmartLogPlanner.formatFirstName(from: resolvedName)
+        let detection = detectIntent(notes: notes, category: category, explicitIntent: explicitIntent)
+        return renderText(firstName: firstName, intent: detection.intent, tone: tone)
+    }
+
+    static func generateAsync(
+        name: String,
+        notes: String = "",
+        category: String = "",
+        explicitIntent: Intent? = nil,
+        tone: Tone = .warm,
+        onDownloading: (() -> Void)? = nil
+    ) async -> String {
+        onDownloading?()
+        return generate(
+            name: name,
+            notes: notes,
+            category: category,
+            explicitIntent: explicitIntent,
+            tone: tone,
+            onDownloading: onDownloading
+        )
+    }
+
+    static func generateVariations(
+        name: String,
+        notes: String = "",
+        category: String = "",
+        explicitIntent: Intent? = nil
+    ) -> [Recommendation] {
+        let targetName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = targetName.isEmpty ? "there" : targetName
+        let firstName = SmartLogPlanner.formatFirstName(from: resolvedName).isEmpty
+            ? "there"
+            : SmartLogPlanner.formatFirstName(from: resolvedName)
+
+        let detection = detectIntent(notes: notes, category: category, explicitIntent: explicitIntent)
+
+        return Tone.allCases.map { tone in
+            Recommendation(
+                text: renderText(firstName: firstName, intent: detection.intent, tone: tone),
+                intent: detection.intent,
+                tone: tone,
+                confidence: detection.confidence,
+                contextBadge: detection.reason
+            )
+        }
+    }
 }
 
 struct Lead: Identifiable {

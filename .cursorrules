@@ -1,6 +1,6 @@
 # RCRM iOS project rules
 
-- Native iOS 17+ app using Swift 5.9+ and SwiftUI. Use FirebaseCore, FirebaseAuth and FirebaseFirestore; do not add third-party UI libraries.
+- Native iOS 26+ app using Swift 5.9+ and SwiftUI. Use FirebaseCore, FirebaseAuth and FirebaseFirestore; do not add third-party UI libraries.
 - Use the Space-Glass & Neon Dark design system: dark space gradients, frosted panels, cyan/purple/green/pink/blue neon accents and legible light text. Reuse the shared theme components.
 - Keep Swift sources in the app target and build complete, compilable code without placeholders.
 - Android is the schema authority. Firestore `leads/{leadId}` stores `ownerId`, `name`, `phone`, `email`, `address`, `company`, `jobTitle`, `notes`, comma-separated `category` and `targetMarket`, `salesStage`, `recruitStage`, `followUpDate`, `isPaused`, `isClosed`, `pausedReason`, `lastAttemptedContact`, and `lastConnectedContact`; it can contain other Android fields. Preserve unedited fields. The `tmMarried`, `tmAge`, `tmChildren`, `tmHomeowner`, and `tmOccupation` booleans mirror `targetMarket` for iOS.

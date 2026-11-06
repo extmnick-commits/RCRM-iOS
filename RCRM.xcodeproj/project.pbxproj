@@ -16,6 +16,7 @@
 		C4A1E0DA4000000000000002 /* GoogleCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A1E0DA4000000000000001 /* GoogleCalendar.swift */; };
 		C5A1E0DA5000000000000002 /* ContactSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A1E0DA5000000000000001 /* ContactSyncService.swift */; };
 		C6A1E0DA6000000000000002 /* SmartLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A1E0DA6000000000000001 /* SmartLogView.swift */; };
+		C7B2E1FB8000000000000002 /* SmsCoach.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B2E1FB8000000000000001 /* SmsCoach.swift */; };
 		EA943370F46A2AF7D43049FF /* RCRMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */; };
 		EEEB8F0EB757E3256250D7C4 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B305E9DC0192B6E9F88D9D3C /* Foundation.framework */; };
 /* End PBXBuildFile section */
@@ -25,6 +26,7 @@
 		C4A1E0DA4000000000000001 /* GoogleCalendar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleCalendar.swift; sourceTree = "<group>"; };
 		C5A1E0DA5000000000000001 /* ContactSyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactSyncService.swift; sourceTree = "<group>"; };
 		C6A1E0DA6000000000000001 /* SmartLogView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SmartLogView.swift; sourceTree = "<group>"; };
+		C7B2E1FB8000000000000001 /* SmsCoach.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SmsCoach.swift; sourceTree = "<group>"; };
 		3906608B5EE7C6F84EAEE581 /* RCRM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RCRM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		45F31C804D2CF1B4208B12B8 /* RootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		AA1234567890123456789002 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
@@ -87,6 +89,7 @@
 				C4A1E0DA4000000000000001 /* GoogleCalendar.swift */,
 				C5A1E0DA5000000000000001 /* ContactSyncService.swift */,
 				C6A1E0DA6000000000000001 /* SmartLogView.swift */,
+				C7B2E1FB8000000000000001 /* SmsCoach.swift */,
 				45F31C804D2CF1B4208B12B8 /* RootView.swift */,
 				AA1234567890123456789004 /* Assets.xcassets */,
 				AA1234567890123456789002 /* GoogleService-Info.plist */,
@@ -171,6 +174,7 @@
 				C4A1E0DA4000000000000002 /* GoogleCalendar.swift in Sources */,
 				C5A1E0DA5000000000000002 /* ContactSyncService.swift in Sources */,
 				C6A1E0DA6000000000000002 /* SmartLogView.swift in Sources */,
+				C7B2E1FB8000000000000002 /* SmsCoach.swift in Sources */,
 				12D146CA295DF58D8305246C /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -252,7 +256,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RCRM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RCRM;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -331,7 +335,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RCRM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RCRM;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

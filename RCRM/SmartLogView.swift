@@ -83,6 +83,39 @@ struct SmartLogView: View {
         return ContactSyncService.leadAlreadyExists(contact, in: store.leads)
     }
 
+    private var combinedNotesForAi: String {
+        let trimmedQuick = quickNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingNotes = matchedExistingLead?.notes.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedQuick.isEmpty && !existingNotes.isEmpty {
+            return "\(trimmedQuick)\n\n\(existingNotes)"
+        }
+        return trimmedQuick.isEmpty ? existingNotes : trimmedQuick
+    }
+
+    /// Nearest future scheduled appointment (same logic as `LeadDetailView`) so Ask AI matches detail-screen context.
+    private func formattedUpcomingAppointment(for lead: Lead) -> String? {
+        let nowMillis = Int64(Date().timeIntervalSince1970 * 1000) - 3_600_000
+        let upcoming = lead.appointments
+            .filter { $0.status == .scheduled && $0.startMillis >= nowMillis }
+            .min(by: { $0.startMillis < $1.startMillis })
+        guard let appt = upcoming else { return nil }
+        let formattedDate = appt.startDate.formatted(date: .abbreviated, time: .shortened)
+        if let loc = appt.location?.trimmingCharacters(in: .whitespacesAndNewlines), !loc.isEmpty {
+            return "\(formattedDate) · \(loc)"
+        }
+        return formattedDate
+    }
+
+    private func activeTargetMarketTraits(for lead: Lead) -> [String] {
+        [
+            (lead.tmMarried, "Married"),
+            (lead.tmAge, "Age 25-55"),
+            (lead.tmChildren, "Children"),
+            (lead.tmHomeowner, "Homeowner"),
+            (lead.tmOccupation, "Occupation")
+        ].compactMap { $0.0 ? $0.1 : nil }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -311,6 +344,18 @@ struct SmartLogView: View {
                         IntroSmsDraftSection(
                             contactName: name,
                             phone: phone,
+                            notes: combinedNotesForAi,
+                            category: category,
+                            company: company,
+                            jobTitle: jobTitle,
+                            salesStage: matchedExistingLead.map { $0.salesStage.title } ?? "",
+                            recruitStage: matchedExistingLead.map { $0.recruitStage.title } ?? "",
+                            followUpDate: followUpDate,
+                            upcomingAppointment: matchedExistingLead.flatMap { formattedUpcomingAppointment(for: $0) },
+                            openReminder: actionTitle,
+                            lastConnectedDate: matchedExistingLead?.lastConnectedContact,
+                            lastAttemptedDate: matchedExistingLead?.lastAttemptedContact,
+                            targetMarketTraits: matchedExistingLead.map { activeTargetMarketTraits(for: $0) } ?? [],
                             text: $introSmsText,
                             userEdited: $userEditedSms
                         )
@@ -537,57 +582,246 @@ struct SmartLogView: View {
 struct IntroSmsDraftSection: View {
     let contactName: String
     let phone: String
+    var notes: String = ""
+    var category: String = ""
+    var company: String = ""
+    var jobTitle: String = ""
+    var salesStage: String = ""
+    var recruitStage: String = ""
+    var followUpDate: Date? = nil
+    var upcomingAppointment: String? = nil
+    var openReminder: String? = nil
+    var lastConnectedDate: Date? = nil
+    var lastAttemptedDate: Date? = nil
+    var targetMarketTraits: [String] = []
     @Binding var text: String
     @Binding var userEdited: Bool
     @Environment(\.openURL) private var openURL
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    @AppStorage("smsCoachTone") private var preferredTone = "Natural"
+    @AppStorage("smsCoachLength") private var preferredLength = "Standard"
+    @AppStorage("smsCoachEmoji") private var preferredEmoji = false
+    @AppStorage("smsCoachExample") private var preferredExample = ""
+    @State private var showingCoach = false
+    @State private var suppressEditTracking = false
+    @State private var selectedStyle: SmsDraftStyle = .smart
+    @State private var didCopy = false
+
+    private var contactContext: SmsContactContext {
+        SmsContactContext(
+            name: contactName,
+            notes: notes,
+            category: category,
+            company: company,
+            jobTitle: jobTitle,
+            salesStage: salesStage,
+            recruitStage: recruitStage,
+            followUpDate: followUpDate,
+            upcomingAppointment: upcomingAppointment,
+            openReminder: openReminder,
+            lastConnectedDate: lastConnectedDate,
+            lastAttemptedDate: lastAttemptedDate,
+            targetMarketTraits: targetMarketTraits
+        )
+    }
+
+    private var smsSegments: Int {
+        let count = text.count
+        if count == 0 { return 1 }
+        return max(1, (count + 159) / 160)
+    }
+
+    private var noteHint: String {
+        if let summary = SmsNoteCoach.noteSummary(notes) {
+            return "From note: \(summary)"
+        }
+        if let appt = upcomingAppointment, !appt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Upcoming appointment: \(appt)"
+        }
+        return "Add a note and the suggestion will follow it"
+    }
+
+    private var askAiButton: some View {
+        Button {
+            showingCoach = true
+        } label: {
+            Label("Ask AI", systemImage: "bubble.left.and.bubble.right.fill")
+                .font(.subheadline.bold())
+                .foregroundStyle(Color.neonCyan)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.neonCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.neonCyan.opacity(0.6), lineWidth: 1))
+        }
+        // In List rows (e.g. lead detail), default button behavior can steal taps; borderless + contentShape helps on iPad.
+        .buttonStyle(.borderless)
+        .contentShape(Rectangle())
+    }
+
+    private var messagesButton: some View {
+        Button {
+            openDraftInMessages()
+        } label: {
+            Label("Messages", systemImage: "arrow.up.right.square")
+                .font(.subheadline.bold())
+                .foregroundStyle(Color.neonGreen)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.neonGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.neonGreen.opacity(0.6), lineWidth: 1))
+        }
+        .buttonStyle(.borderless)
+        .contentShape(Rectangle())
+        .disabled(phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Text suggestion", systemImage: "sparkles")
-                    .font(.caption.bold())
-                    .foregroundStyle(Color.neonGreen)
-                Spacer()
-                Button("Reset") {
-                    text = SmartLogPlanner.renderIntroSms(template: nil, contactName: contactName)
-                    userEdited = false
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Suggested message", systemImage: "sparkles")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.neonCyan)
+                    Text(noteHint)
+                        .font(.caption2)
+                        .foregroundStyle(Color.textSecondary)
+                        .lineLimit(2)
                 }
-                .font(.caption.bold())
+
+                Spacer(minLength: 8)
+
+                Button("Reset") {
+                    userEdited = false
+                    selectedStyle = .smart
+                    refreshDraft(force: true)
+                }
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.textSecondary)
+                .buttonStyle(.borderless)
             }
 
-            Text("Personalized intro SMS — same draft Smart Log uses. Edit before sending.")
-                .font(.caption)
-                .foregroundStyle(Color.textSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(SmsDraftStyle.allCases) { style in
+                        let isSelected = selectedStyle == style
+                        Button {
+                            selectedStyle = style
+                            userEdited = false
+                            refreshDraft(force: true)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: style.iconName)
+                                    .font(.caption2)
+                                Text(style.label)
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .foregroundStyle(isSelected ? Color.black : Color.neonCyan)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(isSelected ? Color.neonCyan : Color.neonCyan.opacity(0.12), in: Capsule())
+                            .overlay(Capsule().stroke(Color.neonCyan.opacity(0.6), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
 
             TextField("SMS Message", text: $text, axis: .vertical)
                 .lineLimit(3...6)
                 .padding()
                 .frostedGlass(cornerRadius: 14)
                 .onChange(of: text) { _, _ in
+                    if suppressEditTracking {
+                        suppressEditTracking = false
+                        return
+                    }
                     userEdited = true
                 }
 
-            Button {
-                openDraftInMessages()
-            } label: {
-                Label("Open in Messages", systemImage: "arrow.up.right.square")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(Color.neonGreen)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color.neonGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.neonGreen.opacity(0.6), lineWidth: 1))
+            HStack {
+                Text("\(text.count) characters (\(smsSegments) SMS \(smsSegments > 1 ? "segments" : "segment"))")
+                    .font(.caption2)
+                    .foregroundStyle(Color.textSecondary)
+
+                Spacer()
+
+                Button {
+                    #if canImport(UIKit)
+                    UIPasteboard.general.string = text
+                    #endif
+                    didCopy = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                        didCopy = false
+                    }
+                } label: {
+                    Label(didCopy ? "Copied" : "Copy", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(didCopy ? Color.neonGreen : Color.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .disabled(phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Group {
+                // iPad (regular width): side-by-side targets are easy to mis-tap inside List; stack vertically.
+                if horizontalSizeClass == .regular {
+                    VStack(spacing: 10) {
+                        askAiButton
+                        messagesButton
+                    }
+                } else {
+                    HStack(spacing: 10) {
+                        askAiButton
+                        messagesButton
+                    }
+                }
+            }
         }
-        .onAppear { refreshDraftIfNeeded() }
-        .onChange(of: contactName) { _, _ in refreshDraftIfNeeded() }
+        .onAppear {
+            refreshDraft(force: false)
+        }
+        .onChange(of: preferredTone) { _, _ in refreshDraft(force: false) }
+        .onChange(of: preferredLength) { _, _ in refreshDraft(force: false) }
+        .onChange(of: preferredEmoji) { _, _ in refreshDraft(force: false) }
+        .onChange(of: contactName) { _, _ in
+            refreshDraft(force: false)
+        }
+        .onChange(of: notes) { _, _ in
+            refreshDraft(force: false)
+        }
+        .onChange(of: category) { _, _ in
+            refreshDraft(force: false)
+        }
+        .onChange(of: company) { _, _ in
+            refreshDraft(force: false)
+        }
+        .onChange(of: upcomingAppointment) { _, _ in
+            refreshDraft(force: false)
+        }
+        .sheet(isPresented: $showingCoach) {
+            SmsCoachSheet(context: contactContext, currentDraft: text) { message in
+                userEdited = true
+                if text == message {
+                    suppressEditTracking = false
+                } else {
+                    suppressEditTracking = true
+                    text = message
+                }
+            }
+        }
     }
 
-    private func refreshDraftIfNeeded() {
-        guard !userEdited else { return }
-        text = SmartLogPlanner.renderIntroSms(template: nil, contactName: contactName)
+    private func refreshDraft(force: Bool) {
+        guard !userEdited || force else { return }
+        if force { userEdited = false }
+        let preferences = SmsWritingPreferences(tone: preferredTone, length: preferredLength, emoji: preferredEmoji, example: preferredExample)
+        let draft = selectedStyle == .smart
+            ? SmsNoteCoach.preferredSuggestion(context: contactContext, preferences: preferences)
+            : SmsNoteCoach.suggest(context: contactContext, style: selectedStyle)
+        guard text != draft else { return }
+        suppressEditTracking = true
+        text = draft
     }
 
     private func openDraftInMessages() {

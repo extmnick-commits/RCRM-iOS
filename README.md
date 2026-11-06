@@ -4,7 +4,7 @@ A native SwiftUI companion to RCRM for Android. The app provides email/password 
 
 ## Setup
 
-1. Open `RCRM.xcodeproj` in Xcode. The project uses bundle identifier `com.nickpulido.rcrm` and iOS 17 or later.
+1. Open `RCRM.xcodeproj` in Xcode. The project uses bundle identifier `com.nickpulido.rcrm` and iOS 26 or later.
 2. Set up a separate Firebase development project with Email/Password authentication, Firestore, and test users and data. Register an Apple app using the bundle identifier above. Download its `GoogleService-Info.plist`.
 3. Drag that file into the `RCRM` group in Xcode, select **Copy items if needed**, and check the **RCRM** target. The configuration file is excluded from Git. The setup screen appears until a configuration is included in the app bundle.
 4. Allow Xcode to resolve Firebase packages. Select a simulator and run. For a physical device, choose your signing team in Signing & Capabilities.

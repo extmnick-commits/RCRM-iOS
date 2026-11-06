@@ -1655,6 +1655,18 @@ struct LeadDetailView: View {
                         IntroSmsDraftSection(
                             contactName: lead.name,
                             phone: lead.phone,
+                            notes: lead.notes,
+                            category: lead.category,
+                            company: lead.company,
+                            jobTitle: lead.title,
+                            salesStage: lead.salesStage.title,
+                            recruitStage: lead.recruitStage.title,
+                            followUpDate: lead.followUpDate,
+                            upcomingAppointment: formattedUpcomingAppointment(for: lead),
+                            openReminder: formattedOpenReminder(),
+                            lastConnectedDate: lead.lastConnectedContact,
+                            lastAttemptedDate: lead.lastAttemptedContact,
+                            targetMarketTraits: activeTargetMarketTraits(for: lead),
                             text: $introSmsText,
                             userEdited: $userEditedIntroSms
                         )
@@ -1945,6 +1957,37 @@ struct LeadDetailView: View {
     private func dateDetail(_ label: String, _ date: Date?) -> some View { LabeledContent(label, value: date?.formatted(date: .abbreviated, time: .shortened) ?? "—") }
     private func action(_ label: String, _ image: String, _ scheme: String, _ value: String) -> some View {
         Button { contact(scheme, value, openURL) } label: { Label(label, systemImage: image).frame(maxWidth: .infinity) }.disabled(value.isEmpty).buttonStyle(.borderless)
+    }
+    private func formattedUpcomingAppointment(for lead: Lead) -> String? {
+        let nowMillis = Int64(Date().timeIntervalSince1970 * 1000) - 3_600_000
+        let upcoming = lead.appointments
+            .filter { $0.status == .scheduled && $0.startMillis >= nowMillis }
+            .min(by: { $0.startMillis < $1.startMillis })
+        guard let appt = upcoming else { return nil }
+        let formattedDate = appt.startDate.formatted(date: .abbreviated, time: .shortened)
+        if let loc = appt.location?.trimmingCharacters(in: .whitespacesAndNewlines), !loc.isEmpty {
+            return "\(formattedDate) · \(loc)"
+        }
+        return formattedDate
+    }
+    private func formattedOpenReminder() -> String? {
+        guard let earliest = openActions.first else { return nil }
+        let title = earliest.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let notes = earliest.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notes.isEmpty && !title.isEmpty && title.lowercased() != "follow up" {
+            return "\(title) (\(notes))"
+        }
+        if !notes.isEmpty { return notes }
+        return title.isEmpty ? nil : title
+    }
+    private func activeTargetMarketTraits(for lead: Lead) -> [String] {
+        [
+            (lead.tmMarried, "Married"),
+            (lead.tmAge, "Age 25-55"),
+            (lead.tmChildren, "Children"),
+            (lead.tmHomeowner, "Homeowner"),
+            (lead.tmOccupation, "Occupation")
+        ].compactMap { $0.0 ? $0.1 : nil }
     }
 }
 struct LeadFormSheet: View {
