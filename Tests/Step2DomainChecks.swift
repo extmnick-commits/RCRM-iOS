@@ -358,6 +358,15 @@ check(SmartLogPlanner.formatFirstName(from: "Alex Rivera") == "Alex", "formatFir
 check(SmartLogPlanner.formatFirstName(from: "  ") == "", "formatFirstName handles empty")
 check(SmartLogPlanner.renderIntroSms(template: "Hey [NAME]!", contactName: "Alex Rivera") == "Hey Alex!", "renderIntroSms replaces token")
 check(SmartLogPlanner.renderIntroSms(template: nil, contactName: "Jordan").contains("Hi Jordan,"), "renderIntroSms default template")
+let smsURL = SmartLogPlanner.messagesURL(phone: "(555) 123-4567", body: "Hi Jorge, following up")
+check(smsURL?.absoluteString.contains("sms:5551234567") == true, "messagesURL sanitizes phone digits")
+check(smsURL?.absoluteString.contains("%2520") == false, "messagesURL does not double-encode spaces")
+if let smsURL, let items = URLComponents(url: smsURL, resolvingAgainstBaseURL: false)?.queryItems,
+   let bodyValue = items.first(where: { $0.name == "body" })?.value {
+    check(bodyValue == "Hi Jorge, following up", "messagesURL body decodes to plain text")
+} else {
+    check(false, "messagesURL includes body query item")
+}
 check(SmartLogPlanner.profileUpdates(draft: ["name": "  Alex  ", "email": "   ", "phone": "123"]).count == 2, "profileUpdates filters blank entries")
 
 let presetToday = SmartLogPlanner.presetFollowUpDate(preset: .todayPreset, now: date(2026, 10, 26, 10, 0), presetHour: 19, presetMinute: 0, calendar: calendar)
@@ -472,6 +481,11 @@ check(briefingTurn.explanation.contains("Sarah") && briefingTurn.explanation.con
 let familyQuestion = SmsNoteCoach.reply(context: coachContext, currentDraft: smartSuggested, prompt: "What do we know about his family?")
 check(familyQuestion.message.isEmpty && familyQuestion.explanation.contains("Sarah"), "Open questions stay in the conversation")
 check(SmsNoteCoach.wantsTextDraft("Make it warmer") && !SmsNoteCoach.wantsTextDraft("What's 2 plus 2?"), "Only text requests produce a new draft")
+let coffeeDraft = "Hi Alex, it was great talking with you."
+let coffeeTurn = SmsNoteCoach.reply(context: coachContext, currentDraft: coffeeDraft, prompt: "I like it, can you add in there to meet up for coffee to catch up?")
+check(coffeeTurn.message.contains(coffeeDraft) && coffeeTurn.message.lowercased().contains("coffee"), "A conversational coffee request preserves and extends the draft")
+let unclearAddition = SmsNoteCoach.reply(context: coachContext, currentDraft: coffeeDraft, prompt: "Can you add something about our trip?")
+check(unclearAddition.message.isEmpty && !unclearAddition.explanation.isEmpty, "Unsupported additions ask for clarification instead of replacing the draft")
 let aside = SmsNoteCoach.reply(context: coachContext, currentDraft: smartSuggested, prompt: "He seemed nervous on the last call")
 check(aside.message.isEmpty && aside.explanation.contains("Noted"), "Sharing context does not overwrite the text")
 

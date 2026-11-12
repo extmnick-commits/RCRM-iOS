@@ -11,6 +11,7 @@ struct ImportedContact: Identifiable, Equatable, Hashable {
     var company: String
     var jobTitle: String
     var address: String
+    var phoneNumbers: [LabeledPhone]
 
     init(
         id: String = UUID().uuidString,
@@ -21,7 +22,8 @@ struct ImportedContact: Identifiable, Equatable, Hashable {
         email: String = "",
         company: String = "",
         jobTitle: String = "",
-        address: String = ""
+        address: String = "",
+        phoneNumbers: [LabeledPhone] = []
     ) {
         self.id = id
         self.givenName = givenName
@@ -32,9 +34,14 @@ struct ImportedContact: Identifiable, Equatable, Hashable {
         self.company = company
         self.jobTitle = jobTitle
         self.address = address
+        self.phoneNumbers = phoneNumbers
     }
 
     init(from cnContact: CNContact) {
+        self.phoneNumbers = cnContact.phoneNumbers.map { number in
+            let label = number.label.map { CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: $0) } ?? "Phone"
+            return LabeledPhone(label: label, number: number.value.stringValue)
+        }
         self.id = cnContact.identifier
         self.givenName = cnContact.givenName
         self.familyName = cnContact.familyName
@@ -87,6 +94,7 @@ struct ImportedContact: Identifiable, Equatable, Hashable {
         lead.ownerId = ownerId
         lead.name = fullName.isEmpty ? "Unknown Contact" : fullName
         lead.phone = phone
+        lead.additionalPhoneNumbers = phoneNumbers
         lead.email = email
         lead.address = address
         lead.company = company
@@ -187,7 +195,7 @@ enum ContactSyncService {
 
     static func leadAlreadyExists(_ contact: ImportedContact, in leads: [Lead]) -> Lead? {
         leads.first { lead in
-            if !contact.phone.isEmpty && !lead.phone.isEmpty && SmartLogPlanner.phonesMatch(contact.phone, lead.phone) {
+            if !contact.phone.isEmpty && ([lead.phone] + lead.additionalPhoneNumbers.map(\.number)).contains(where: { SmartLogPlanner.phonesMatch(contact.phone, $0) }) {
                 return true
             }
             if !contact.email.isEmpty && !lead.email.isEmpty &&

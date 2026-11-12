@@ -7,12 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		011FF0418AA982AF9247D571 /* SharedContactInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC97EDE085B7B5A350E44356 /* SharedContactInbox.swift */; };
+		02E95AEB1519361C41C6A5FA /* RCRMShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = ECF1F75CB7FCBE78EAC30DD6 /* RCRMShare.appex */; };
 		12D146CA295DF58D8305246C /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F31C804D2CF1B4208B12B8 /* RootView.swift */; };
+		57A1A0A912A177E9FBD7308D /* SharedContactInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC97EDE085B7B5A350E44356 /* SharedContactInbox.swift */; };
 		61B136A054FB8973103F3DCA /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = E47EE692107085E7BBBBBF81 /* FirebaseAuth */; };
 		747835277872FE0D67B9B78E /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FB3A9965C6EF7348861576EE /* FirebaseCore */; };
+		7A7C7C8CF69BBC9C6EF0075B /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B305E9DC0192B6E9F88D9D3C /* Foundation.framework */; };
 		A87BFF1A58BA07A9951D6D15 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 7A6DA715D080C669E3F43D97 /* FirebaseFirestore */; };
 		AA1234567890123456789001 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA1234567890123456789002 /* GoogleService-Info.plist */; };
 		AA1234567890123456789003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA1234567890123456789004 /* Assets.xcassets */; };
+		C2A1DB221A15312A7D0973F4 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA215C1EBC95F1C8476B4DF /* ShareViewController.swift */; };
 		C4A1E0DA4000000000000002 /* GoogleCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A1E0DA4000000000000001 /* GoogleCalendar.swift */; };
 		C5A1E0DA5000000000000002 /* ContactSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A1E0DA5000000000000001 /* ContactSyncService.swift */; };
 		C6A1E0DA6000000000000002 /* SmartLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A1E0DA6000000000000001 /* SmartLogView.swift */; };
@@ -21,17 +26,46 @@
 		EEEB8F0EB757E3256250D7C4 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B305E9DC0192B6E9F88D9D3C /* Foundation.framework */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		625EFF653A386335F506A483 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DB77C2D4F7250A0C7E916C92 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D8063E64584639A1F7896F50;
+			remoteInfo = RCRMShare;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B8CE439F98C38B0DF0CF4351 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				02E95AEB1519361C41C6A5FA /* RCRMShare.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		111AE2AD0EE7F16F09F3D669 /* RCRMApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RCRMApp.swift; sourceTree = "<group>"; };
+		3906608B5EE7C6F84EAEE581 /* RCRM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RCRM.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		45F31C804D2CF1B4208B12B8 /* RootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		5AA215C1EBC95F1C8476B4DF /* ShareViewController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		AA1234567890123456789002 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		AA1234567890123456789004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B305E9DC0192B6E9F88D9D3C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		C4A1E0DA4000000000000001 /* GoogleCalendar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleCalendar.swift; sourceTree = "<group>"; };
 		C5A1E0DA5000000000000001 /* ContactSyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactSyncService.swift; sourceTree = "<group>"; };
 		C6A1E0DA6000000000000001 /* SmartLogView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SmartLogView.swift; sourceTree = "<group>"; };
 		C7B2E1FB8000000000000001 /* SmsCoach.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SmsCoach.swift; sourceTree = "<group>"; };
-		3906608B5EE7C6F84EAEE581 /* RCRM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RCRM.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		45F31C804D2CF1B4208B12B8 /* RootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
-		AA1234567890123456789002 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
-		AA1234567890123456789004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		B305E9DC0192B6E9F88D9D3C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		ECD51EFD967BE48F48BF3C11 /* RCRMShare.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = RCRMShare.entitlements; sourceTree = "<group>"; };
+		ECF1F75CB7FCBE78EAC30DD6 /* RCRMShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RCRMShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EE20F1BDBB76EE4B8663B663 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		FC97EDE085B7B5A350E44356 /* SharedContactInbox.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SharedContactInbox.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -46,6 +80,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DB45B3F0364A5DB36F1D95FE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7A7C7C8CF69BBC9C6EF0075B /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -57,12 +99,24 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		3099570F9801653E6B2F6CDD /* RCRMShare */ = {
+			isa = PBXGroup;
+			children = (
+				5AA215C1EBC95F1C8476B4DF /* ShareViewController.swift */,
+				EE20F1BDBB76EE4B8663B663 /* Info.plist */,
+				ECD51EFD967BE48F48BF3C11 /* RCRMShare.entitlements */,
+			);
+			name = RCRMShare;
+			path = RCRMShare;
+			sourceTree = "<group>";
+		};
 		35739C2E6CC356692D816578 = {
 			isa = PBXGroup;
 			children = (
 				93A995D30D0872697CE70036 /* Products */,
 				039253B1630E1718D50A9655 /* Frameworks */,
 				F70DE5799D1F93B32E5639E4 /* RCRM */,
+				3099570F9801653E6B2F6CDD /* RCRMShare */,
 			);
 			sourceTree = "<group>";
 		};
@@ -78,6 +132,7 @@
 			isa = PBXGroup;
 			children = (
 				3906608B5EE7C6F84EAEE581 /* RCRM.app */,
+				ECF1F75CB7FCBE78EAC30DD6 /* RCRMShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -93,6 +148,7 @@
 				45F31C804D2CF1B4208B12B8 /* RootView.swift */,
 				AA1234567890123456789004 /* Assets.xcassets */,
 				AA1234567890123456789002 /* GoogleService-Info.plist */,
+				FC97EDE085B7B5A350E44356 /* SharedContactInbox.swift */,
 			);
 			path = RCRM;
 			sourceTree = "<group>";
@@ -107,10 +163,12 @@
 				D371FD68695FAFECFA2868FE /* Sources */,
 				ACA7317186BE3D5F3651289A /* Frameworks */,
 				E2CE929BDF5DB839F5DE22A6 /* Resources */,
+				B8CE439F98C38B0DF0CF4351 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				93F5E63DB275C12052D93534 /* PBXTargetDependency */,
 			);
 			name = RCRM;
 			packageProductDependencies = (
@@ -121,6 +179,23 @@
 			productName = RCRM;
 			productReference = 3906608B5EE7C6F84EAEE581 /* RCRM.app */;
 			productType = "com.apple.product-type.application";
+		};
+		D8063E64584639A1F7896F50 /* RCRMShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 777B080D2B780E088469B086 /* Build configuration list for PBXNativeTarget "RCRMShare" */;
+			buildPhases = (
+				74C6CEF7B98E424286FC51EC /* Sources */,
+				DB45B3F0364A5DB36F1D95FE /* Frameworks */,
+				A994359F7F67941DA1935AF7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RCRMShare;
+			productName = RCRMShare;
+			productReference = ECF1F75CB7FCBE78EAC30DD6 /* RCRMShare.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -149,11 +224,19 @@
 			projectRoot = "";
 			targets = (
 				943128363A7BADD0F8A1CA26 /* RCRM */,
+				D8063E64584639A1F7896F50 /* RCRMShare */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		A994359F7F67941DA1935AF7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E2CE929BDF5DB839F5DE22A6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -166,6 +249,15 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		74C6CEF7B98E424286FC51EC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				011FF0418AA982AF9247D571 /* SharedContactInbox.swift in Sources */,
+				C2A1DB221A15312A7D0973F4 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D371FD68695FAFECFA2868FE /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -176,10 +268,20 @@
 				C6A1E0DA6000000000000002 /* SmartLogView.swift in Sources */,
 				C7B2E1FB8000000000000002 /* SmsCoach.swift in Sources */,
 				12D146CA295DF58D8305246C /* RootView.swift in Sources */,
+				57A1A0A912A177E9FBD7308D /* SharedContactInbox.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		93F5E63DB275C12052D93534 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = RCRMShare;
+			target = D8063E64584639A1F7896F50 /* RCRMShare */;
+			targetProxy = 625EFF653A386335F506A483 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		4B2789BE218E78D3CD0DEF7F /* Debug */ = {
@@ -247,12 +349,35 @@
 			};
 			name = Debug;
 		};
+		5D75ED709FE642573E982516 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = RCRMShare/RCRMShare.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2CJBGBUTH3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RCRMShare/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nickpulido.rcrm.share;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 		63074C48BEF295453EC93B7E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = RCRM/RCRM.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RCRM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RCRM;
@@ -261,8 +386,29 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nickpulido.rcrm;
 				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		8B5521D0CA61FEF75D37FCE3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = RCRMShare/RCRMShare.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2CJBGBUTH3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RCRMShare/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nickpulido.rcrm.share;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -332,6 +478,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = RCRM/RCRM.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RCRM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RCRM;
@@ -340,6 +488,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nickpulido.rcrm;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -356,6 +505,15 @@
 			buildConfigurations = (
 				4B2789BE218E78D3CD0DEF7F /* Debug */,
 				9A896A0C6761F15098DA470E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		777B080D2B780E088469B086 /* Build configuration list for PBXNativeTarget "RCRMShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5D75ED709FE642573E982516 /* Release */,
+				8B5521D0CA61FEF75D37FCE3 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

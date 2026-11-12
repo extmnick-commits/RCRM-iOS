@@ -1,4 +1,5 @@
 import EventKit
+import CallKit
 import SwiftUI
 
 extension Color {
@@ -172,10 +173,56 @@ private struct LeadDeepLinkItem: Identifiable, Equatable {
     let id: String
 }
 
+// CallKit reports call state, but does not expose the other party's number.
+@MainActor
+final class PostCallCoordinator: NSObject, ObservableObject, @preconcurrency CXCallObserverDelegate {
+    static let shared = PostCallCoordinator()
+    @Published var completedCall: SmartLogPresentation?
+    private let observer = CXCallObserver()
+    private var startedCalls: Set<UUID> = []
+    private var numbersByCall: [UUID: String] = [:]
+    private var outgoingNumber: (number: String, date: Date)?
+
+    private override init() {
+        super.init()
+        observer.setDelegate(self, queue: .main)
+    }
+
+    func prepareOutgoingCall(_ number: String) {
+        outgoingNumber = (number, Date())
+    }
+
+    func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+        if !call.hasEnded {
+            if startedCalls.insert(call.uuid).inserted, call.isOutgoing,
+               let pending = outgoingNumber, Date().timeIntervalSince(pending.date) < 60 {
+                numbersByCall[call.uuid] = pending.number
+                outgoingNumber = nil
+            }
+        } else if startedCalls.remove(call.uuid) != nil {
+            let phone = numbersByCall.removeValue(forKey: call.uuid) ?? ""
+            completedCall = SmartLogPresentation(initialPhone: phone)
+        }
+    }
+
+    func reset() {
+        completedCall = nil
+        outgoingNumber = nil
+        startedCalls.removeAll()
+        numbersByCall.removeAll()
+    }
+}
+
 struct AppShell: View {
     let userID: String
     @StateObject private var store = LeadsStore()
     @StateObject private var calendar = GoogleCalendarService()
+    @StateObject private var postCall = PostCallCoordinator.shared
+    @State private var callLogPresentation: SmartLogPresentation?
+    @State private var showingCallPrompt = false
+    @State private var sharedContacts: [SharedContactItem] = []
+    @State private var showingSharedContacts = false
+    @State private var importingSharedContacts = false
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var notifications: ReminderNotificationService
     @Environment(\.scenePhase) private var scenePhase
@@ -193,6 +240,22 @@ struct AppShell: View {
             NavigationStack { SettingsView() }.tabItem { Label("Settings", systemImage: "gearshape") }.tag(5)
         }.environmentObject(store)
             .environmentObject(calendar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if !sharedContacts.isEmpty {
+                    Button {
+                        showingSharedContacts = true
+                    } label: {
+                        Label(importingSharedContacts ? "Importing shared contacts…" : "Review shared contacts (\(sharedContacts.count))", systemImage: "square.and.arrow.down")
+                            .font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(10)
+                            .background(Color.neonCyan.opacity(0.18))
+                    }
+                    .disabled(importingSharedContacts)
+                }
+            }
+            .sheet(isPresented: $showingSharedContacts, onDismiss: refreshSharedContacts) {
+                SharedContactInboxView(userID: userID, onChange: refreshSharedContacts)
+                    .environmentObject(store)
+            }
             .sheet(isPresented: $showingAdd) { LeadFormSheet(userID: userID) }.environmentObject(store)
             .sheet(item: Binding(
                 get: { session.pendingLeadID.map(LeadDeepLinkItem.init) },
@@ -211,8 +274,28 @@ struct AppShell: View {
                 }
                 .environmentObject(store)
             }
+            .fullScreenCover(item: $callLogPresentation) { presentation in
+                SmartLogView(userID: userID, initialPhone: presentation.initialPhone, isCallLog: true) {
+                    callLogPresentation = nil
+                }.environmentObject(store)
+            }
+            .alert("Log your call?", isPresented: $showingCallPrompt) {
+                Button("Log call") {
+                    callLogPresentation = postCall.completedCall
+                    postCall.completedCall = nil
+                }
+                Button("Not now", role: .cancel) { postCall.completedCall = nil }
+            } message: {
+                Text(postCall.completedCall?.initialPhone.isEmpty == false
+                     ? "Add notes and contact details for your call."
+                     : "Add the caller's number or import a contact to save your notes.")
+            }
+            .onChange(of: postCall.completedCall?.id) { _, _ in
+                if scenePhase == .active && postCall.completedCall != nil { showingCallPrompt = true }
+            }
             .onAppear {
                 store.start(userID: userID)
+                refreshSharedContacts()
                 Task {
                     await calendar.prepare(monthStartMillis: AppointmentAgenda.startOfMonthContaining(Int64(Date().timeIntervalSince1970 * 1000)))
                     await notifications.refreshAuthorizationStatus()
@@ -220,13 +303,121 @@ struct AppShell: View {
             }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
+                refreshSharedContacts()
+                if postCall.completedCall != nil { showingCallPrompt = true }
                 Task {
                     await calendar.prepare(monthStartMillis: AppointmentAgenda.startOfMonthContaining(Int64(Date().timeIntervalSince1970 * 1000)))
                     await notifications.refreshAuthorizationStatus()
                 }
             }
-            .onDisappear { store.stop() }
+            .onChange(of: store.isLoading) { _, loading in
+                if !loading && store.error == nil { importSharedContactsIfNeeded() }
+            }
+            .onDisappear { store.stop(); postCall.reset() }
             .alert("RCRM", isPresented: Binding(get: { store.error != nil || session.error != nil }, set: { if !$0 { store.error = nil; session.error = nil } })) { Button("OK") { store.error = nil; session.error = nil } } message: { Text(store.error ?? session.error ?? "") }
+    }
+    private func refreshSharedContacts() {
+        do {
+            sharedContacts = try SharedContactInbox.items()
+            importSharedContactsIfNeeded()
+        }
+        catch { sharedContacts = [] }
+    }
+    private func importSharedContactsIfNeeded() {
+        guard !sharedContacts.isEmpty, !importingSharedContacts, !showingSharedContacts, !store.isLoading, store.error == nil else { return }
+        importingSharedContacts = true
+        let pending = sharedContacts
+        Task { @MainActor in
+            do {
+                try await store.importSharedContacts(pending, userID: userID)
+            } catch {
+                store.error = "Could not import shared contacts. They remain available to review: \(error.localizedDescription)"
+            }
+            importingSharedContacts = false
+            refreshSharedContacts()
+        }
+    }
+}
+private struct SharedContactSelection: Identifiable {
+    let id = UUID()
+    let item: SharedContactItem
+    let phone: String
+}
+
+private struct SharedContactInboxView: View {
+    let userID: String
+    let onChange: () -> Void
+    @EnvironmentObject private var store: LeadsStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var items: [SharedContactItem] = []
+    @State private var selected: SharedContactSelection?
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            List {
+                if items.isEmpty {
+                    Text("No shared contacts to review.").foregroundStyle(Color.textSecondary)
+                }
+                ForEach(items) { item in
+                    Section("Shared contact") {
+                        TextField("Contact name", text: Binding(
+                            get: { items.first(where: { $0.id == item.id })?.name ?? item.name },
+                            set: { updateName($0, for: item.id) }
+                        ))
+                        .textInputAutocapitalization(.words)
+                        .accessibilityLabel("Contact name")
+                        if item.phones.count > 1 {
+                            Text("Choose the main number. All shared numbers will be saved.").font(.caption).foregroundStyle(Color.textSecondary)
+                        }
+                        ForEach(Array(item.phones.enumerated()), id: \.offset) { index, phone in
+                            Button { selected = SharedContactSelection(item: item, phone: phone) } label: {
+                                HStack {
+                                    Image(systemName: "phone")
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.phoneLabel(at: index)).font(.caption).foregroundStyle(Color.textSecondary)
+                                        Text(phone)
+                                    }
+                                }
+                            }
+                        }
+                        Button("Remove from shared items", role: .destructive) { remove(item) }
+                    }.listRowBackground(Color.glassPanel)
+                }
+            }
+            .scrollContentBackground(.hidden).background { SpaceBackgroundView() }
+            .navigationTitle("Shared contacts")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .onAppear(perform: reload)
+            .fullScreenCover(item: $selected) { selection in
+                let item = selection.item
+                SmartLogView(userID: userID, initialContact: ImportedContact(fullName: item.name, phone: selection.phone, email: item.email, company: item.company, jobTitle: item.jobTitle, phoneNumbers: item.phones.enumerated().map { LabeledPhone(label: item.phoneLabel(at: $0.offset), number: $0.element) }), onSaved: {
+                    remove(item)
+                }) { selected = nil }
+                .environmentObject(store)
+            }
+            .alert("Shared contacts", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("OK") { error = nil }
+            } message: { Text(error ?? "") }
+        }
+    }
+    private func reload() {
+        do { items = try SharedContactInbox.items(); onChange() }
+        catch { self.error = "Could not load shared contacts." }
+    }
+    private func remove(_ item: SharedContactItem) {
+        do { try SharedContactInbox.remove(item); reload() }
+        catch { self.error = "Could not remove the shared contact." }
+    }
+    private func updateName(_ name: String, for id: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        var updated = items[index]
+        updated.name = name
+        do {
+            try SharedContactInbox.add(updated)
+            items[index] = updated
+        } catch {
+            self.error = "Could not save the contact name. Please try again."
+        }
     }
 }
 private func dueGroup(_ date: Date) -> Int {
@@ -1190,10 +1381,13 @@ struct ContactRow: View {
         if !lead.phone.isEmpty { Button { contact("tel", lead.phone, openURL) } label: { Image(systemName: "phone.fill") }.buttonStyle(.borderless).accessibilityLabel("Call \(lead.name)"); Button { contact("sms", lead.phone, openURL) } label: { Image(systemName: "message.fill") }.buttonStyle(.borderless).accessibilityLabel("Text \(lead.name)") }
     }.padding(.vertical, 5) }
 }
+@MainActor
 private func contact(_ scheme: String, _ value: String, _ open: OpenURLAction) {
     let allowed = scheme == "mailto" ? CharacterSet.urlQueryAllowed : CharacterSet(charactersIn: "+0123456789")
     let sanitized = scheme == "mailto" ? value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "" : String(value.unicodeScalars.filter { allowed.contains($0) })
-    guard !sanitized.isEmpty, let url = URL(string: "\(scheme):\(sanitized)") else { return }; open(url)
+    guard !sanitized.isEmpty, let url = URL(string: "\(scheme):\(sanitized)") else { return }
+    if scheme == "tel" { PostCallCoordinator.shared.prepareOutgoingCall(value) }
+    open(url)
 }
 struct ContactsView: View {
     let userID: String
@@ -1201,10 +1395,11 @@ struct ContactsView: View {
     @State private var search = ""
     @State private var category = "All"
     @State private var showingAdd = false
+    @State private var showingRecentNumberImport = false
     @State private var smartLogPresentation: SmartLogPresentation?
     @State private var toDelete: Lead?
     var filtered: [Lead] { store.leads.filter { lead in
-        (category == "All" || lead.categories.contains { $0.caseInsensitiveCompare(category) == .orderedSame }) && (search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || [lead.name, lead.phone, lead.email, lead.company, lead.notes, lead.category].contains { $0.localizedCaseInsensitiveContains(search) })
+        (category == "All" || lead.categories.contains { $0.caseInsensitiveCompare(category) == .orderedSame }) && (search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ([lead.name, lead.phone, lead.email, lead.company, lead.notes, lead.category] + lead.additionalPhoneNumbers.map(\.number)).contains { $0.localizedCaseInsensitiveContains(search) })
     } }
     var body: some View { ZStack { SpaceBackgroundView(); VStack(spacing: 0) {
         ScrollView(.horizontal, showsIndicators: false) { HStack { ForEach(["All", "Prospect", "Recruit", "Client"], id: \.self) { item in Button(item) { category = item }.font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 8).background(category == item ? Color.neonCyan.opacity(0.22) : Color.glassPanel, in: Capsule()) } }.padding(.horizontal).padding(.vertical, 8) }
@@ -1221,6 +1416,18 @@ struct ContactsView: View {
                     Image(systemName: "person.crop.circle.badge.plus")
                 }
                 .accessibilityLabel("Import from Apple Contacts")
+
+                Menu {
+                    Button("Import a recent number", systemImage: "square.and.arrow.down") {
+                        showingRecentNumberImport = true
+                    }
+                    Button("Log a call", systemImage: "phone") {
+                        smartLogPresentation = SmartLogPresentation(isCallLog: true)
+                    }
+                } label: {
+                    Image(systemName: "phone.badge.plus")
+                }
+                .accessibilityLabel("Call options")
 
                 Button {
                     smartLogPresentation = SmartLogPresentation()
@@ -1240,17 +1447,90 @@ struct ContactsView: View {
         }
     }
     .sheet(isPresented: $showingAdd) { LeadFormSheet(userID: userID) }
+    .sheet(isPresented: $showingRecentNumberImport) { RecentNumberImportSheet(userID: userID) }
     .fullScreenCover(item: $smartLogPresentation) { presentation in
         SmartLogView(
             userID: userID,
             initialContact: presentation.initialContact,
-            openContactPickerOnAppear: presentation.openContactPickerOnAppear
+            initialPhone: presentation.initialPhone,
+            openContactPickerOnAppear: presentation.openContactPickerOnAppear,
+            isCallLog: presentation.isCallLog
         ) {
             smartLogPresentation = nil
         }
         .environmentObject(store)
     }
     .confirmationDialog("Delete this contact?", isPresented: Binding(get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }), titleVisibility: .visible) { Button("Delete", role: .destructive) { if let lead = toDelete { Task { do { try await store.deleteLead(lead, userID: userID) } catch { store.error = error.localizedDescription } } }; toDelete = nil } } message: { Text("This removes the contact. Its related activity and actions are not automatically deleted.") }
+    }
+}
+struct RecentNumberImportSheet: View {
+    let userID: String
+    var onSelect: ((String) -> Void)? = nil
+    @EnvironmentObject private var store: LeadsStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var phone = ""
+
+    private var validPhone: Bool {
+        let trimmed = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.filter(\.isNumber).count >= 7 &&
+            trimmed.allSatisfy { $0.isNumber || "+-(). ".contains($0) }
+    }
+    private var existingLead: Lead? {
+        guard validPhone else { return nil }
+        return store.leads.first { !$0.phone.isEmpty && SmartLogPlanner.phonesMatch($0.phone, phone) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Copy a number from Phone") {
+                    Text("In the Phone app, open Recents, tap the info button beside a call, then touch and hold the number and copy it. Return here and paste it below.")
+                        .foregroundStyle(Color.textSecondary)
+                    Text("iPhone does not let RCRM read your recent calls automatically. You can also type a number.")
+                        .font(.footnote).foregroundStyle(Color.textSecondary)
+                }.listRowBackground(Color.glassPanel)
+                Section("Phone number") {
+                    TextField("Paste or enter a number", text: $phone)
+                        .keyboardType(.phonePad)
+                        .textContentType(.telephoneNumber)
+                    if !phone.isEmpty && !validPhone {
+                        Text("Enter one phone number with at least 7 digits.")
+                            .font(.footnote).foregroundStyle(Color.neonPink)
+                    }
+                }.listRowBackground(Color.glassPanel)
+                if let lead = existingLead {
+                    Section("Already in RCRM") {
+                        NavigationLink {
+                            LeadDetailView(leadID: lead.id, userID: userID)
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Text(lead.name)
+                                Text(lead.phone).font(.caption).foregroundStyle(Color.textSecondary)
+                            }
+                        }
+                    }.listRowBackground(Color.glassPanel)
+                }
+                if validPhone, let onSelect {
+                    Section {
+                        Button("Use number in Smart Log") {
+                            onSelect(phone.trimmingCharacters(in: .whitespacesAndNewlines))
+                            dismiss()
+                        }
+                    }.listRowBackground(Color.glassPanel)
+                } else if validPhone && existingLead == nil {
+                    Section {
+                        NavigationLink("Review and add contact") {
+                            LeadFormSheet(userID: userID, initialPhone: phone.trimmingCharacters(in: .whitespacesAndNewlines))
+                        }
+                    }.listRowBackground(Color.glassPanel)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background { SpaceBackgroundView() }
+            .navigationTitle("Import recent number")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+        }
     }
 }
 struct FollowUpsView: View {
@@ -1676,6 +1956,13 @@ struct LeadDetailView: View {
                         detail("Phone", lead.phone); detail("Email", lead.email); detail("Address", lead.address)
                         detail("Company", lead.company); detail("Title", lead.title); detail("Category", lead.category)
                     }.listRowBackground(Color.glassPanel)
+                    if !lead.additionalPhoneNumbers.isEmpty {
+                        Section("Phone numbers") {
+                            ForEach(Array(lead.additionalPhoneNumbers.enumerated()), id: \.offset) { _, number in
+                                LabeledContent(number.label.isEmpty ? "Phone" : number.label, value: number.number)
+                            }
+                        }.listRowBackground(Color.glassPanel)
+                    }
                     Section("Pipeline") {
                         LabeledContent("Sales stage", value: lead.salesStage.title); LabeledContent("Recruit stage", value: lead.recruitStage.title)
                         LabeledContent("Target market", value: "\(lead.targetMarketPoints) / 5")
@@ -2003,9 +2290,11 @@ struct LeadFormSheet: View {
     @State private var error: String?
     @State private var activityToDelete: ActivityRecord?
     @State private var deletingActivityID: String?
-    init(userID: String, existing: Lead? = nil) {
+    init(userID: String, existing: Lead? = nil, initialPhone: String = "") {
         self.userID = userID; self.existing = existing
-        _draft = State(initialValue: existing ?? Lead())
+        var initialDraft = existing ?? Lead()
+        if existing == nil { initialDraft.phone = initialPhone }
+        _draft = State(initialValue: initialDraft)
         _hasFollowUp = State(initialValue: existing?.followUpDate != nil)
         _followUp = State(initialValue: existing?.followUpDate ?? Date())
     }
@@ -2023,6 +2312,22 @@ struct LeadFormSheet: View {
                 TextField("Email", text: $draft.email).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
                 TextField("Address", text: $draft.address); TextField("Company", text: $draft.company); TextField("Title", text: $draft.title)
             }.listRowBackground(Color.glassPanel)
+            if !draft.additionalPhoneNumbers.isEmpty {
+                Section {
+                    ForEach(draft.additionalPhoneNumbers.indices, id: \.self) { index in
+                        HStack {
+                            TextField("Label", text: $draft.additionalPhoneNumbers[index].label)
+                            TextField("Number", text: $draft.additionalPhoneNumbers[index].number)
+                                .keyboardType(.phonePad)
+                        }
+                    }
+                    .onDelete { draft.additionalPhoneNumbers.remove(atOffsets: $0) }
+                } header: {
+                    Text("Imported phone numbers")
+                } footer: {
+                    Text("The Phone field above is the main number. Swipe left to remove an imported number.")
+                }.listRowBackground(Color.glassPanel)
+            }
             Section("Categories") {
                 ForEach(["Prospect", "Recruit", "Client"], id: \.self) { category in
                     Toggle(category, isOn: Binding(get: { draft.categories.contains { $0.caseInsensitiveCompare(category) == .orderedSame } }, set: { enabled in

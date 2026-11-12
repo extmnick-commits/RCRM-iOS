@@ -2332,10 +2332,19 @@ enum SmartLogPlanner {
     }
 
     static func messagesURL(phone: String, body: String) -> URL? {
-        let cleanPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanPhone.isEmpty else { return nil }
-        let encodedBody = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        return URL(string: "sms:\(cleanPhone)&body=\(encodedBody)")
+        let trimmedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPhone.isEmpty else { return nil }
+        let sanitizedPhone = String(trimmedPhone.unicodeScalars.filter { CharacterSet(charactersIn: "+0123456789").contains($0) })
+        guard !sanitizedPhone.isEmpty else { return nil }
+
+        var components = URLComponents()
+        components.scheme = "sms"
+        components.path = sanitizedPhone
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedBody.isEmpty {
+            components.queryItems = [URLQueryItem(name: "body", value: trimmedBody)]
+        }
+        return components.url
     }
 
     /** Optional fields left empty in a quick log never erase the full contact profile. */
@@ -2700,10 +2709,16 @@ enum LocalSmsDraft {
     }
 }
 
+struct LabeledPhone: Hashable {
+    var label: String
+    var number: String
+}
+
 struct Lead: Identifiable {
     var id = ""
     var ownerId = ""
     var name = "", phone = "", email = "", address = "", company = "", title = "", notes = "", category = "Prospect"
+    var additionalPhoneNumbers: [LabeledPhone] = []
     var salesStage: SalesStage = .newLead
     var recruitStage: RecruitStage = .prospect
     var followUpDate: Date?
@@ -2726,6 +2741,10 @@ struct Lead: Identifiable {
         ownerId = d["ownerId"] as? String ?? ""
         name = d["name"] as? String ?? "Unnamed contact"
         phone = d["phone"] as? String ?? ""; email = d["email"] as? String ?? ""
+        additionalPhoneNumbers = (d["additionalPhoneNumbers"] as? [[String: String]] ?? []).compactMap { value in
+            guard let number = value["number"], !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return LabeledPhone(label: value["label"] ?? "Phone", number: number)
+        }
         address = d["address"] as? String ?? ""; company = d["company"] as? String ?? ""
         title = d["jobTitle"] as? String ?? d["title"] as? String ?? ""
         notes = d["notes"] as? String ?? ""; category = d["category"] as? String ?? "Prospect"
@@ -2774,7 +2793,7 @@ struct Lead: Identifiable {
     }
     func data(userID: String) -> [String: Any] {
         let market = [(tmMarried, "Married"), (tmAge, "Age 25-55"), (tmChildren, "Children"), (tmHomeowner, "Homeowner"), (tmOccupation, "Occupation")].filter { $0.0 }.map { $0.1 }.joined(separator: ", ")
-        return ["ownerId": userID, "name": name, "phone": phone, "email": email, "address": address, "company": company, "jobTitle": title,
+        return ["ownerId": userID, "name": name, "phone": phone, "additionalPhoneNumbers": additionalPhoneNumbers.map { ["label": $0.label, "number": $0.number] }, "email": email, "address": address, "company": company, "jobTitle": title,
                 "notes": notes, "category": category, "salesStage": salesStage.rawValue, "recruitStage": recruitStage.rawValue,
                 "followUpDate": followUpDate.map { Timestamp(date: $0) } as Any? ?? NSNull(), "isPaused": isPaused, "isClosed": isClosed,
                 "pausedReason": pausedReason as Any? ?? NSNull(),
@@ -2851,10 +2870,10 @@ final class LeadsStore: ObservableObject {
                 }
             }
     }
-    func createLead(_ lead: Lead, userID: String) async throws -> String {
+    func createLead(_ lead: Lead, userID: String, documentID: String? = nil) async throws -> String {
         try validate(userID)
         let db = Firestore.firestore()
-        let ref = db.collection("leads").document()
+        let ref = documentID.map { db.collection("leads").document($0) } ?? db.collection("leads").document()
         var data = lead.data(userID: userID)
         data["timestamp"] = Timestamp(date: Date())
         let batch = db.batch()
@@ -2876,6 +2895,48 @@ final class LeadsStore: ObservableObject {
         createdLead.ownerId = userID
         ReminderNotificationService.shared.syncLeadActions(lead: createdLead, actions: createdActions)
         return ref.documentID
+    }
+    func importSharedContacts(_ items: [SharedContactItem], userID: String) async throws {
+        try validate(userID)
+        let snapshot = try await Firestore.firestore().collection("leads")
+            .whereField("ownerId", isEqualTo: userID).getDocuments(source: .server)
+        var known = snapshot.documents.map(Lead.init)
+        for item in items {
+            try validate(userID)
+            let documentID = "shared_\(item.id)"
+            if known.contains(where: { $0.id == documentID }) {
+                try SharedContactInbox.remove(item)
+                continue
+            }
+            let phones = item.phones.enumerated().map { LabeledPhone(label: item.phoneLabel(at: $0.offset), number: $0.element) }
+            let matchingContact = ImportedContact(phone: item.phones.first ?? "", email: item.email)
+            let match = known.first { lead in
+                item.phones.contains { phone in
+                    ([lead.phone] + lead.additionalPhoneNumbers.map(\.number)).contains { SmartLogPlanner.phonesMatch(phone, $0) }
+                }
+            } ?? ContactSyncService.leadAlreadyExists(matchingContact, in: known)
+            if let existing = match {
+                var updated = existing
+                if updated.phone.isEmpty { updated.phone = item.phones.first ?? "" }
+                if updated.email.isEmpty { updated.email = item.email }
+                if updated.company.isEmpty { updated.company = item.company }
+                if updated.title.isEmpty { updated.title = item.jobTitle }
+                for phone in phones where !updated.additionalPhoneNumbers.contains(where: { SmartLogPlanner.phonesMatch($0.number, phone.number) }) {
+                    updated.additionalPhoneNumbers.append(phone)
+                }
+                try await updateLead(updated, original: existing, userID: userID)
+                if let index = known.firstIndex(where: { $0.id == existing.id }) { known[index] = updated }
+            } else {
+                let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let contact = ImportedContact(fullName: name.isEmpty ? (item.company.isEmpty ? (item.phones.first ?? "") : item.company) : name,
+                                              phone: item.phones.first ?? "", email: item.email, company: item.company,
+                                              jobTitle: item.jobTitle, phoneNumbers: phones)
+                var lead = contact.toLead(ownerId: userID)
+                lead.id = try await createLead(lead, userID: userID, documentID: documentID)
+                known.append(lead)
+            }
+            try SharedContactInbox.remove(item)
+        }
     }
     func updateLead(_ lead: Lead, original: Lead, userID: String) async throws {
         try validate(userID)
@@ -3178,6 +3239,17 @@ extension LeadsStore {
             nowMillis: now
         )
         return (migrated, legacyEventId)
+    }
+    func recordSmartCall(leadID: String, userID: String, activityID: String, note: String) async throws {
+        try validate(userID)
+        guard !leadID.isEmpty, !leadID.contains("/"), !activityID.contains("/") else { throw StoreError.invalidLead }
+        let ref = Firestore.firestore().collection("leads").document(leadID)
+        let parent = try await ref.getDocument()
+        guard parent.data()?["ownerId"] as? String == userID else { throw StoreError.invalidLead }
+        let record = ActivityRecord(id: activityID, leadId: leadID, ownerId: userID,
+                                    type: .call, outcome: "Call logged", note: note.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    timestamp: Int64(Date().timeIntervalSince1970 * 1000))
+        try await ref.collection("activity_records").document(activityID).setData(record.data)
     }
     func saveOutcome(_ request: OutcomeSaveRequest) async throws {
         try validate(request.ownerId)

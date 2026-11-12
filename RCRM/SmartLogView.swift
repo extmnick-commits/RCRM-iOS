@@ -3,7 +3,9 @@ import SwiftUI
 struct SmartLogPresentation: Identifiable {
     let id = UUID()
     var initialContact: ImportedContact?
+    var initialPhone: String = ""
     var openContactPickerOnAppear = false
+    var isCallLog = false
 }
 
 struct SmartLogView: View {
@@ -11,7 +13,9 @@ struct SmartLogView: View {
     var initialContact: ImportedContact? = nil
     var initialPhone: String = ""
     var openContactPickerOnAppear = false
+    var isCallLog = false
     var onDismiss: () -> Void = {}
+    var onSaved: () -> Void = {}
 
     @EnvironmentObject private var store: LeadsStore
     @Environment(\.openURL) private var openURL
@@ -20,13 +24,16 @@ struct SmartLogView: View {
     // Contact Profile fields
     @State private var name: String
     @State private var phone: String
+    @State private var importedPhoneNumbers: [LabeledPhone]
     @State private var email: String
     @State private var company: String
     @State private var jobTitle: String
     @State private var address: String
     @State private var category: String = "Prospect"
+    @State private var categoryWasSelected = false
     @State private var quickNote: String = ""
     @State private var didImportFromAddressBook = false
+    @State private var populatedCallLeadID: String?
 
     // Follow-up and Reminder
     @State private var selectedPreset: SmartLogPlanner.SmartPreset? = .todayPreset
@@ -44,19 +51,28 @@ struct SmartLogView: View {
         initialContact: ImportedContact? = nil,
         initialPhone: String = "",
         openContactPickerOnAppear: Bool = false,
+        isCallLog: Bool = false,
+        onSaved: @escaping () -> Void = {},
         onDismiss: @escaping () -> Void = {}
     ) {
         self.userID = userID
         self.initialContact = initialContact
         self.initialPhone = initialPhone
         self.openContactPickerOnAppear = openContactPickerOnAppear
+        self.isCallLog = isCallLog
+        self.onSaved = onSaved
         self.onDismiss = onDismiss
 
         let contact = initialContact
         let resolvedName = contact?.fullName ?? ""
         let resolvedPhone = contact?.phone ?? initialPhone
+        if isCallLog {
+            _selectedPreset = State(initialValue: nil)
+            _followUpDate = State(initialValue: nil)
+        }
         _name = State(initialValue: resolvedName)
         _phone = State(initialValue: resolvedPhone)
+        _importedPhoneNumbers = State(initialValue: contact?.phoneNumbers ?? [])
         _email = State(initialValue: contact?.email ?? "")
         _company = State(initialValue: contact?.company ?? "")
         _jobTitle = State(initialValue: contact?.jobTitle ?? "")
@@ -67,8 +83,11 @@ struct SmartLogView: View {
 
     // Contact Picker
     @State private var showingContactPicker = false
+    @State private var showingRecentNumberImport = false
 
     // Saving state
+    @State private var savedCallLeadID: String?
+    @State private var callActivityID = UUID().uuidString
     @State private var isSaving = false
     @State private var errorMessage: String? = nil
 
@@ -81,6 +100,27 @@ struct SmartLogView: View {
             email: email
         )
         return ContactSyncService.leadAlreadyExists(contact, in: store.leads)
+    }
+
+    private var initialCallLead: Lead? {
+        guard isCallLog, SmartLogPlanner.normalizedPhone(phone).count >= 7 else { return nil }
+        return store.leads.first { !$0.phone.isEmpty && SmartLogPlanner.phonesMatch($0.phone, phone) }
+    }
+
+    private func populateInitialCallLead() {
+        guard let lead = initialCallLead, populatedCallLeadID == nil else { return }
+        populatedCallLeadID = lead.id
+        if name.isEmpty { name = lead.name }
+        if email.isEmpty { email = lead.email }
+        if company.isEmpty { company = lead.company }
+        if jobTitle.isEmpty { jobTitle = lead.title }
+        if address.isEmpty { address = lead.address }
+        if !categoryWasSelected,
+           let savedCategory = ["Prospect", "Client", "Recruit"].first(where: { choice in
+               lead.categories.contains { $0.caseInsensitiveCompare(choice) == .orderedSame }
+           }) {
+            category = savedCategory
+        }
     }
 
     private var combinedNotesForAi: String {
@@ -127,7 +167,7 @@ struct SmartLogView: View {
                             HStack(spacing: 10) {
                                 Image(systemName: "person.crop.circle.badge.checkmark")
                                     .foregroundStyle(Color.neonGreen)
-                                Text("Imported from Apple Contacts. Add notes, follow-up, and category, then save.")
+                                Text("Contact details imported. Add notes, follow-up, and category, then save.")
                                     .font(.footnote)
                                     .foregroundStyle(Color.textSecondary)
                             }
@@ -201,6 +241,25 @@ struct SmartLogView: View {
                                     .autocorrectionDisabled()
                                     .padding()
                                     .frostedGlass(cornerRadius: 14)
+                            }
+
+                            Button {
+                                showingRecentNumberImport = true
+                            } label: {
+                                Label("Import a recent number", systemImage: "phone.badge.plus")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .accessibilityIdentifier("import-recent-number-button")
+
+                            if !importedPhoneNumbers.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("IMPORTED NUMBERS").font(.caption.bold()).foregroundStyle(Color.textSecondary)
+                                    ForEach(Array(importedPhoneNumbers.enumerated()), id: \.offset) { _, entry in
+                                        LabeledContent(entry.label.isEmpty ? "Phone" : entry.label, value: entry.number)
+                                    }
+                                    Text("All numbers will be saved. The phone field above is the main number.")
+                                        .font(.caption).foregroundStyle(Color.textSecondary)
+                                }
                             }
 
                             HStack(spacing: 10) {
@@ -428,10 +487,19 @@ struct SmartLogView: View {
                     showingContactPicker = false
                 }
             }
+            .sheet(isPresented: $showingRecentNumberImport) {
+                RecentNumberImportSheet(userID: userID) { importedPhone in
+                    phone = importedPhone
+                }
+            }
             .onAppear {
+                populateInitialCallLead()
                 if openContactPickerOnAppear {
                     showingContactPicker = true
                 }
+            }
+            .onChange(of: initialCallLead?.id) { _, _ in
+                populateInitialCallLead()
             }
         }
     }
@@ -449,6 +517,7 @@ struct SmartLogView: View {
     private func populate(from contact: ImportedContact) {
         if !contact.fullName.isEmpty { self.name = contact.fullName }
         if !contact.phone.isEmpty { self.phone = contact.phone }
+        self.importedPhoneNumbers = contact.phoneNumbers
         if !contact.email.isEmpty { self.email = contact.email }
         if !contact.company.isEmpty { self.company = contact.company }
         if !contact.jobTitle.isEmpty { self.jobTitle = contact.jobTitle }
@@ -462,6 +531,7 @@ struct SmartLogView: View {
     private func categoryChip(_ title: String, color: Color) -> some View {
         Button {
             category = title
+            categoryWasSelected = true
         } label: {
             Text(title)
                 .font(.caption.weight(.semibold))
@@ -533,6 +603,7 @@ struct SmartLogView: View {
             lead.ownerId = userID
             lead.name = trimmedName
             lead.phone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+            lead.additionalPhoneNumbers = importedPhoneNumbers
             lead.email = email.trimmingCharacters(in: .whitespacesAndNewlines)
             lead.address = address.trimmingCharacters(in: .whitespacesAndNewlines)
             lead.company = company.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -542,16 +613,28 @@ struct SmartLogView: View {
             lead.followUpDate = followUpDate
 
             // If an existing lead was matched, update its details
-            if let matched = matchedExistingLead {
+            if let savedID = savedCallLeadID {
+                lead.id = savedID
+            } else if let matched = matchedExistingLead {
                 lead.id = matched.id
                 var updated = matched
-                if !lead.name.isEmpty { updated.name = lead.name }
+                if !importedPhoneNumbers.isEmpty {
+                    var numbers = matched.additionalPhoneNumbers
+                    if !matched.phone.isEmpty && !numbers.contains(where: { SmartLogPlanner.phonesMatch($0.number, matched.phone) }) {
+                        numbers.append(LabeledPhone(label: "Phone", number: matched.phone))
+                    }
+                    for number in importedPhoneNumbers where !numbers.contains(where: { SmartLogPlanner.phonesMatch($0.number, number.number) && $0.label.caseInsensitiveCompare(number.label) == .orderedSame }) {
+                        numbers.append(number)
+                    }
+                    updated.additionalPhoneNumbers = numbers
+                }
+                if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { updated.name = lead.name }
                 if !lead.phone.isEmpty { updated.phone = lead.phone }
                 if !lead.email.isEmpty { updated.email = lead.email }
                 if !lead.company.isEmpty { updated.company = lead.company }
                 if !lead.title.isEmpty { updated.title = lead.title }
                 if !lead.address.isEmpty { updated.address = lead.address }
-                if !lead.category.isEmpty { updated.category = lead.category }
+                if (!isCallLog || categoryWasSelected) && !lead.category.isEmpty { updated.category = lead.category }
                 if let followUp = followUpDate { updated.followUpDate = followUp }
                 if !quickNote.isEmpty {
                     updated.notes = NoteUtils.prependNote(
@@ -563,17 +646,23 @@ struct SmartLogView: View {
                 }
                 try await store.updateLead(updated, original: matched, userID: userID)
             } else {
-                _ = try await store.createLead(lead, userID: userID)
+                lead.id = try await store.createLead(lead, userID: userID)
+            }
+
+            if isCallLog {
+                savedCallLeadID = lead.id
+                try await store.recordSmartCall(leadID: lead.id, userID: userID, activityID: callActivityID, note: quickNote)
             }
 
             if openMessages {
                 sendSms()
             }
 
+            onSaved()
             dismiss()
             onDismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = savedCallLeadID == nil ? error.localizedDescription : "Contact details were saved, but the call log could not be saved. Retry saving the log. \(error.localizedDescription)"
             isSaving = false
         }
     }

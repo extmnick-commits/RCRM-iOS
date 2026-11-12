@@ -445,6 +445,19 @@ enum SmsNoteCoach {
             )
         }
 
+        // Preserve the draft for conversational requests to add something to it.
+        if wantsAddition(lower) {
+            if lower.contains("coffee"), !lower.contains("don't add"), !lower.contains("do not add"), !lower.contains("without") {
+                let invitation = "Would you like to meet up for coffee and catch up?"
+                let updated = starting.lowercased().contains("coffee") ? starting : "\(starting) \(invitation)"
+                return SmsCoachTurn(explanation: "I added a coffee catch-up to your draft.", message: updated)
+            }
+            return SmsCoachTurn(
+                explanation: "I can help add that. Try telling me the exact sentence you'd like to include, or revise the draft directly.",
+                message: ""
+            )
+        }
+
         // Chat stays conversational unless the advisor asked for a new or edited text.
         if !wantsTextDraft(ask) {
             return buildConversationTurn(context: context, insight: insight, ask: ask)
@@ -605,6 +618,7 @@ enum SmsNoteCoach {
         let lower = trimmed.lowercased()
         if pastedMessage(from: trimmed) != nil { return true }
         if lower.hasPrefix("client reply:") { return true }
+        if wantsAddition(lower) { return true }
         if wantsAlternativeAngle(lower) { return true }
         if wantsVoicemailFollowUp(lower) || wantsAppointmentConfirmation(lower) || wantsReferralAsk(lower) || wantsTwoTimeOptions(lower) {
             return true
@@ -623,6 +637,10 @@ enum SmsNoteCoach {
             "mention ", "include ", "bring up"
         ]
         return draftCues.contains { lower.contains($0) }
+    }
+
+    private static func wantsAddition(_ lower: String) -> Bool {
+        ["add ", "add in", "include ", "put in ", "work in "].contains { lower.contains($0) }
     }
 
     /// After the on-device LLM returns text, optionally run the style pipeline for tone chips and style-only prompts — not for full rewrites the model already composed.
@@ -1525,30 +1543,15 @@ enum SmsCoachEngine {
                         prompt: prompt,
                         preferences: preferences
                     )
-                    if !SmsNoteCoach.wantsTextDraft(prompt) {
-                        let explanation = generated.explanation.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !explanation.isEmpty {
-                            return SmsCoachTurn(explanation: explanation, message: "", alternatives: [])
-                        }
-                    } else {
-                        let raw = SmsNoteCoach.sanitize(generated.message)
-                        if !raw.isEmpty {
-                            let messageOut: String
-                            if SmsNoteCoach.shouldPostProcessAppleReply(prompt: prompt) {
-                                messageOut = SmsNoteCoach.refineDraftForPrompt(
-                                    context: context,
-                                    draft: raw,
-                                    prompt: prompt
-                                )
-                            } else {
-                                messageOut = raw
-                            }
-                            return SmsCoachTurn(
-                                explanation: generated.explanation,
-                                message: messageOut,
-                                alternatives: []
-                            )
-                        }
+                    let raw = SmsNoteCoach.sanitize(generated.message)
+                    if !raw.isEmpty {
+                        return SmsCoachTurn(
+                            explanation: generated.explanation,
+                            message: raw,
+                            alternatives: []
+                        )
+                    } else if !generated.explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return SmsCoachTurn(explanation: generated.explanation, message: "", alternatives: [])
                     }
                 } catch {
                     return localFallback
@@ -1611,7 +1614,7 @@ enum AppleSmsCoach {
         let session = LanguageModelSession(instructions: """
         You are an on-device assistant sitting with a financial professional. Talk with them about whatever they ask, and also help them write one SMS to this contact when they want a text.
         Answer the latest message directly in `explanation`. Use the conversation so far. When the question is about this contact, use only facts from the profile, notes, or what the advisor just said — never invent meetings, dollar amounts, family details, appointments, or promises. For other questions, answer normally from general knowledge.
-        Put a new SMS in `message` only when they ask you to write, rewrite, shorten, warm up, or otherwise change a text. If they are chatting or asking a question, leave `message` empty.
+        Put a complete, ready-to-send SMS in `message` when they ask you to write or change the draft, including indirect conversational requests such as "I like it, can you add meeting for coffee?" Treat follow-up requests as edits to the current draft, keeping earlier requested details unless asked to remove them. If they are only chatting, asking for advice, or discussing options without requesting a change, leave `message` empty. Ask a brief clarification in `explanation` when an edit is ambiguous.
         Treat CRM notes and reminders as private background, not wording to copy into an SMS. Write a fresh, natural message. Mention only details useful for the recipient; omit internal observations, sensitive details, timestamps, labels, and log text. Only use exact wording when the advisor explicitly asks to send those words.
         Ignore raw stage-transition logs like "Moved to ... stage" when phrasing a text. Convert third-person notes ("he wants", "her 401k") into natural second-person phrasing ("your 401k").
         Preserve the current draft when asked to edit it; change only what the advisor requested. If the advisor provides a client reply, respond to its meaning using the contact context; do not repeat private notes. Treat examples as style only, never as facts or wording to copy.
@@ -1623,7 +1626,7 @@ enum AppleSmsCoach {
         Contact notes:
         \(trimmedNotes.isEmpty ? "No notes yet." : trimmedNotes)
         """)
-        let prior = history.suffix(8).map { line -> String in
+        let prior = history.suffix(16).map { line -> String in
             switch line.role {
             case .user: return "Advisor: \(line.text)"
             case .assistant:
